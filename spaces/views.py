@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import urllib.error
 import urllib.parse
@@ -10,7 +9,6 @@ import urllib.request
 from typing import Optional
 
 import xml.sax.saxutils as sx
-from django.conf import settings
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
@@ -24,13 +22,12 @@ except Exception:  # pragma: no cover - optional during local edits
 logger = logging.getLogger("yospaces")
 
 AT_VOICE_NUMBER = "+256323200925"
-
 AFRICASTALKING_LIVE_USERNAME = "yo_space"
 AFRICASTALKING_LIVE_API_KEY = "atsk_d0ad900cfea42fa2fca26ee5bc47964c8e1e092d5565e4c0ce5217a82c5267ed079ab373"
-
 AT_CONFERENCE_URL = "https://voice.africastalking.com/conference"
-
 AT_CALL_URL = "https://voice.africastalking.com/call"
+
+
 def _plain(text: str) -> HttpResponse:
     return HttpResponse(text, content_type="text/plain")
 
@@ -55,14 +52,6 @@ def _sanitize_space_name(name: str) -> str:
     name = re.sub(r"\s+", " ", name)
     name = re.sub(r"[^A-Za-z0-9_ -]", "", name)
     return name[:100] or "YoSpace"
-
-
-def _latest_host_space(host_phone: str) -> Optional[Space]:
-    return (
-        Space.objects.filter(host_phone=_normalize_phone(host_phone))
-        .order_by("-created_at", "-id")
-        .first()
-    )
 
 
 def _current_space_for_host(host_phone: str, space_name: Optional[str] = None) -> Optional[Space]:
@@ -159,13 +148,11 @@ def _call_invitees(space: Space) -> None:
     if not participants:
         return
 
-    # Try SDK first if available.
     try:
         if africastalking:
             voice_client = getattr(africastalking, "Voice", None)
             call_fn = getattr(voice_client, "call", None)
             if callable(call_fn):
-                # SDK style may vary by version; use the simplest form first.
                 try:
                     call_fn(AT_VOICE_NUMBER, participants)
                     logger.info("SDK call placed for %s", space.name)
@@ -175,7 +162,6 @@ def _call_invitees(space: Space) -> None:
     except Exception as exc:
         logger.warning("SDK voice call failed for %s: %s", space.name, exc)
 
-    # REST fallback based on the current Voice API format.
     if not AFRICASTALKING_LIVE_API_KEY:
         logger.warning("Missing Africa's Talking API key; skipping outbound calls for %s", space.name)
         return
@@ -195,7 +181,11 @@ def _call_invitees(space: Space) -> None:
 
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            logger.info("Voice call API response for %s: %s", space.name, resp.read().decode("utf-8", errors="ignore"))
+            logger.info(
+                "Voice call API response for %s: %s",
+                space.name,
+                resp.read().decode("utf-8", errors="ignore"),
+            )
     except Exception as exc:  # pragma: no cover - external network
         logger.error("Call failed for %s: %s", space.name, exc)
 
@@ -223,7 +213,6 @@ def _conference_xml(space: Space, caller_number: str, greeting: str) -> str:
 
 
 def go_live(space_name: str, host_phone: str) -> str:
-    """Activate the room and optionally call invitees. The conference still works without outbound calls."""
     try:
         space = Space.objects.get(name=space_name, host_phone=_normalize_phone(host_phone))
     except Space.DoesNotExist:
@@ -254,7 +243,6 @@ def ussd_callback(request):
     text = (request.POST.get("text", "") or "").strip()
     parts = text.split("*") if text else []
 
-    # Main menu
     if text == "":
         return _plain(
             "CON Welcome to YoSpaces\n"
@@ -265,7 +253,6 @@ def ussd_callback(request):
             "5. Exit"
         )
 
-    # Host flow
     if text == "1":
         return _plain("CON Enter a name for your Space")
 
@@ -277,11 +264,9 @@ def ussd_callback(request):
         )
         return _plain(_space_dashboard(space))
 
-    # Manage members menu
     if len(parts) == 3 and parts[0] == "1" and parts[2] == "1":
         return _plain(_space_members_menu())
 
-    # Add member
     if len(parts) == 4 and parts[0] == "1" and parts[2] == "1" and parts[3] == "1":
         return _plain("CON Enter member phone number")
 
@@ -291,7 +276,7 @@ def ussd_callback(request):
             return _plain("END Space not found. Please start over.")
 
         member_phone = _normalize_phone(parts[4])
-        invitee, created = SpaceInvitee.objects.get_or_create(
+        _, created = SpaceInvitee.objects.get_or_create(
             space=space,
             phone_number=member_phone,
         )
@@ -301,7 +286,6 @@ def ussd_callback(request):
         _send_invite_sms(member_phone, space)
         return _plain(f"END {member_phone} invited to {space.name}.")
 
-    # Remove member
     if len(parts) == 4 and parts[0] == "1" and parts[2] == "1" and parts[3] == "2":
         return _plain("CON Enter member phone number to remove")
 
@@ -314,7 +298,6 @@ def ussd_callback(request):
         deleted, _ = SpaceInvitee.objects.filter(space=space, phone_number=member_phone).delete()
         return _plain("END Member removed." if deleted else "END Member not found in this space.")
 
-    # View members
     if len(parts) == 4 and parts[0] == "1" and parts[2] == "1" and parts[3] == "3":
         space = _current_space_for_host(phone_number, parts[1])
         if not space:
@@ -327,7 +310,6 @@ def ussd_callback(request):
             return _plain("END Space not found. Please start over.")
         return _plain(_space_dashboard(space))
 
-    # Manage space menu
     if len(parts) == 3 and parts[0] == "1" and parts[2] == "2":
         space = _current_space_for_host(phone_number, parts[1])
         if not space:
@@ -361,14 +343,12 @@ def ussd_callback(request):
             return _plain("END Space not found. Please start over.")
         return _plain(_space_dashboard(space))
 
-    # Go live from dashboard
     if len(parts) == 3 and parts[0] == "1" and parts[2] == "3":
         space = _current_space_for_host(phone_number, parts[1])
         if not space:
             return _plain("END Space not found. Please start over.")
         return _plain(go_live(space.name, phone_number))
 
-    # Join space flow
     if text == "2":
         return _plain("CON Enter Space PIN")
 
@@ -379,7 +359,6 @@ def ussd_callback(request):
         except Space.DoesNotExist:
             return _plain("END Invalid Space PIN.")
 
-        # Host gets management menu, everyone else gets join instructions.
         if _normalize_phone(space.host_phone) == phone_number:
             return _plain(_space_dashboard(space))
 
@@ -392,51 +371,24 @@ def ussd_callback(request):
             f"Dial the voice line and enter PIN {space.pin} to join."
         )
 
-    # Browse spaces: host sees management menu if they select their own space.
-    # if text == "3":
-    #     return _plain(_browse_menu())
-    # =====================
-    # Browse Spaces
-    # =====================
     if text == "3":
-        spaces = list(
-            Space.objects.filter(is_active=True)
-            .order_by("-created_at")[:5]
-        )
+        return _plain(_browse_menu())
 
-        if not spaces:
-            return _plain("END No active spaces right now.")
-
-        response = "CON Active Spaces\n"
-
-        for i, space in enumerate(spaces, start=1):
-            response += f"{i}. {space.name}\n"
-
-        return _plain(response)
-    # User selected a space from Browse
     if len(parts) == 2 and parts[0] == "3":
-
-        spaces = list(
-            Space.objects.filter(is_active=True)
-            .order_by("-created_at")[:5]
-        )
-
+        spaces = list(Space.objects.filter(is_active=True).order_by("-created_at")[:5])
         try:
             index = int(parts[1]) - 1
             space = spaces[index]
         except (ValueError, IndexError):
             return _plain("END Invalid option.")
 
-        # If caller is the host, show dashboard
         if _normalize_phone(phone_number) == _normalize_phone(space.host_phone):
             return _plain(_space_dashboard(space))
 
-        # Otherwise allow joining
         SpaceInvitee.objects.get_or_create(
             space=space,
             phone_number=_normalize_phone(phone_number),
         )
-
         return _plain(
             f"END {space.name}\n"
             f"PIN: {space.pin}\n"
@@ -457,7 +409,6 @@ def ussd_callback(request):
         if _normalize_phone(space.host_phone) == phone_number:
             return _plain(_space_dashboard(space))
 
-        # Non-hosts can join by PIN; this keeps the flow simple and reliable.
         SpaceInvitee.objects.get_or_create(
             space=space,
             phone_number=phone_number,
@@ -468,9 +419,7 @@ def ussd_callback(request):
         )
 
     if text == "4":
-        return _plain(
-            "END YoSpaces is a 2G-first social audio platform built for local communities."
-        )
+        return _plain("END YoSpaces is a 2G-first social audio platform built for local communities.")
 
     if text == "5":
         return _plain("END Thanks for using YoSpaces.")
@@ -490,12 +439,10 @@ def voice_callback(request):
     dtmf_digits = (request.POST.get("dtmfDigits", "") or request.POST.get("digits", "")).strip()
     client_request_id = (request.POST.get("clientRequestId", "") or "").strip()
 
-    # Call ended: clean up any active participant record.
     if is_active == "0":
         ActiveSpaceParticipant.objects.filter(call_session_id=session_id).delete()
         return _xml('<?xml version="1.0" encoding="UTF-8"?><Response></Response>')
 
-    # If clientRequestId exists, use it as the room PIN.
     if client_request_id:
         try:
             space = Space.objects.get(pin=client_request_id)
@@ -509,7 +456,6 @@ def voice_callback(request):
             )
             return _xml(_conference_xml(space, caller_number, f"Connecting you to {space.name}"))
 
-    # First inbound response: ask for the PIN.
     if not dtmf_digits:
         callback_url = request.build_absolute_uri(request.path)
         xml = (
@@ -522,7 +468,6 @@ def voice_callback(request):
         )
         return _xml(xml)
 
-    # PIN entered via DTMF.
     try:
         space = Space.objects.get(pin=dtmf_digits)
     except Space.DoesNotExist:
@@ -530,7 +475,6 @@ def voice_callback(request):
 
     caller_number = _normalize_phone(caller_number or destination_number)
 
-    # Host can activate the room by calling in.
     if caller_number == _normalize_phone(space.host_phone):
         if not space.is_active:
             space.is_active = True
@@ -552,7 +496,6 @@ def voice_callback(request):
 
 @csrf_exempt
 def conference_control(request):
-    """Proxy to Africa's Talking conference API for mute/unmute/kick/lock/unlock/etc."""
     if request.method != "POST":
         return JsonResponse({"status": False, "errorMessage": "POST only"}, status=405)
 
@@ -567,7 +510,6 @@ def conference_control(request):
             status=500,
         )
 
-    # Required fields are passed through from the client, but we set sensible defaults.
     payload.setdefault("username", AFRICASTALKING_LIVE_USERNAME)
     payload.setdefault("phoneNumber", AT_VOICE_NUMBER)
 
@@ -606,4 +548,3 @@ def active_listeners(request):
         for p in ActiveSpaceParticipant.objects.select_related("space").filter(space__is_active=True)
     ]
     return JsonResponse({"active": data})
-
