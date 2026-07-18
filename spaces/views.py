@@ -1212,8 +1212,55 @@ def ussd_callback(request):
         )
 
     # Browse spaces: host sees management menu if they select their own space.
+    # if text == "3":
+    #     return _plain(_browse_menu())
+    # =====================
+    # Browse Spaces
+    # =====================
     if text == "3":
-        return _plain(_browse_menu())
+        spaces = list(
+            Space.objects.filter(is_active=True)
+            .order_by("-created_at")[:5]
+        )
+
+        if not spaces:
+            return _plain("END No active spaces right now.")
+
+        response = "CON Active Spaces\n"
+
+        for i, space in enumerate(spaces, start=1):
+            response += f"{i}. {space.name}\n"
+
+        return _plain(response)
+    # User selected a space from Browse
+if len(parts) == 2 and parts[0] == "3":
+
+    spaces = list(
+        Space.objects.filter(is_active=True)
+        .order_by("-created_at")[:5]
+    )
+
+    try:
+        index = int(parts[1]) - 1
+        space = spaces[index]
+    except (ValueError, IndexError):
+        return _plain("END Invalid option.")
+
+    # If caller is the host, show dashboard
+    if _normalize_phone(phone_number) == _normalize_phone(space.host_phone):
+        return _plain(_space_dashboard(space))
+
+    # Otherwise allow joining
+    SpaceInvitee.objects.get_or_create(
+        space=space,
+        phone_number=_normalize_phone(phone_number),
+    )
+
+    return _plain(
+        f"END {space.name}\n"
+        f"PIN: {space.pin}\n"
+        "Dial the YoSpaces voice number and enter the PIN to join."
+    )
 
     if len(parts) == 2 and parts[0] == "3":
         spaces = _active_spaces()
