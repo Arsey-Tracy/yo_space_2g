@@ -11,32 +11,36 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 from pathlib import Path
+import os
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Load environment variables from .env file
+load_dotenv(BASE_DIR / '.env')
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-6t)&zl1h448n%v8den8805uieb!^67$%3(jvgl6snrkzk8sl2n"
+SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-6t)&zl1h448n%v8den8805uieb!^67$%3(jvgl6snrkzk8sl2n")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 
 ALLOWED_HOSTS = [
     ".onrender.com",
     "127.0.0.1",
     "localhost",
 ]
-AT_VOICE_NUMBER = "+256323200925"
 
-AFRICASTALKING_LIVE_USERNAME = "yo_space"
-AFRICASTALKING_LIVE_API_KEY = "atsk_d0ad900cfea42fa2fca26ee5bc47964c8e1e092d5565e4c0ce5217a82c5267ed079ab373"
+# Africa's Talking Configuration
+AT_VOICE_NUMBER = os.getenv("AFRICASTALKING_VOICE_NUMBER", "+256323200925")
+AFRICASTALKING_LIVE_USERNAME = os.getenv("AFRICASTALKING_USERNAME", "yo_space")
+AFRICASTALKING_LIVE_API_KEY = os.getenv("AFRICASTALKING_API_KEY", "atsk_d0ad900cfea42fa2fca26ee5bc47964c8e1e092d5565e4c0ce5217a82c5267ed079ab373")
 
 AT_CONFERENCE_URL = "https://voice.africastalking.com/conference"
-
 AT_CALL_URL = "https://voice.africastalking.com/call"
 
 

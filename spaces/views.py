@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import urllib.error
 import urllib.parse
@@ -9,6 +10,7 @@ import urllib.request
 from typing import Optional
 
 import xml.sax.saxutils as sx
+from django.conf import settings
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
@@ -21,13 +23,14 @@ except Exception:  # pragma: no cover - optional during local edits
 
 logger = logging.getLogger("yospaces")
 
-AT_VOICE_NUMBER = "+256323200925"
-AFRICASTALKING_LIVE_USERNAME = "yo_space"
-AFRICASTALKING_LIVE_API_KEY = "atsk_d0ad900cfea42fa2fca26ee5bc47964c8e1e092d5565e4c0ce5217a82c5267ed079ab373"
+# Load configuration from Django settings (which loads from .env)
+AT_VOICE_NUMBER = getattr(settings, 'AT_VOICE_NUMBER', "+256323200925")
+AFRICASTALKING_LIVE_USERNAME = getattr(settings, 'AFRICASTALKING_LIVE_USERNAME', "yo_space")
+AFRICASTALKING_LIVE_API_KEY = getattr(settings, 'AFRICASTALKING_LIVE_API_KEY', "")
 AT_CONFERENCE_URL = "https://voice.africastalking.com/conference"
 AT_CALL_URL = "https://voice.africastalking.com/call"
 
-if africastalking:
+if africastalking and AFRICASTALKING_LIVE_API_KEY:
     try:
         africastalking.initialize(AFRICASTALKING_LIVE_USERNAME, AFRICASTALKING_LIVE_API_KEY)
     except Exception as exc:  # pragma: no cover - depends on installed SDK
@@ -40,6 +43,34 @@ def _plain(text: str) -> HttpResponse:
 
 def _xml(text: str) -> HttpResponse:
     return HttpResponse(text, content_type="text/xml")
+
+
+# Session state tracking for USSD flow
+# In production, use Django cache or database-backed sessions
+_ussd_sessions = {}
+
+
+def _get_session(phone_number: str) -> dict:
+    """Get or create USSD session for a phone number."""
+    if phone_number not in _ussd_sessions:
+        _ussd_sessions[phone_number] = {
+            "state": "main_menu",
+            "space_name": None,
+            "step": 0,
+        }
+    return _ussd_sessions[phone_number]
+
+
+def _update_session(phone_number: str, **kwargs) -> None:
+    """Update USSD session state."""
+    session = _get_session(phone_number)
+    session.update(kwargs)
+
+
+def _clear_session(phone_number: str) -> None:
+    """Clear USSD session."""
+    if phone_number in _ussd_sessions:
+        del _ussd_sessions[phone_number]
 
 
 def _normalize_phone(phone: str) -> str:
@@ -265,7 +296,11 @@ def ussd_callback(request):
     text = (request.POST.get("text", "") or "").strip()
     parts = text.split("*") if text else []
 
+    session = _get_session(phone_number)
+
+    # Handle main menu
     if text == "":
+        _update_session(phone_number, state="main_menu", space_name=None, step=0)
         return _plain(
             "CON Welcome to YoSpaces\n"
             "1. Host a Space\n"
@@ -275,155 +310,207 @@ def ussd_callback(request):
             "5. Exit"
         )
 
+    # Handle "Host a Space" flow
     if text == "1":
+        _update_session(phone_number, state="host_space_name", step=1)
         return _plain("CON Enter a name for your Space")
 
-    if len(parts) == 2 and parts[0] == "1":
-        space_name = _sanitize_space_name(parts[1])
+    if session["state"] == "host_space_name" and len(parts) == 1:
+        space_name = _sanitize_space_name(parts[0])
         space, _created = Space.objects.get_or_create(
             name=space_name,
             host_phone=phone_number,
         )
+        _update_session(phone_number, state="space_dashboard", space_name=space.name, step=2)
         return _plain(_space_dashboard(space))
 
-    if len(parts) == 3 and parts[0] == "1" and parts[2] == "1":
-        return _plain(_space_members_menu())
-
-    if len(parts) == 4 and parts[0] == "1" and parts[2] == "1" and parts[3] == "1":
-        return _plain("CON Enter member phone number")
-
-    if len(parts) == 5 and parts[0] == "1" and parts[2] == "1" and parts[3] == "1":
-        space = _current_space_for_host(phone_number, parts[1])
+    # Handle space dashboard options
+    if session["state"] == "space_dashboard" and len(parts) == 1:
+        space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
+            _clear_session(phone_number)
             return _plain("END Space not found. Please start over.")
 
-        member_phone = _normalize_phone(parts[4])
+        if parts[0] == "1":  # Manage Members
+            _update_session(phone_number, state="manage_members", step=3)
+            return _plain(_space_members_menu())
+
+        if parts[0] == "2":  # Manage Space
+            _update_session(phone_number, state="manage_space", step=3)
+            return _plain(_space_manage_menu(space))
+
+        if parts[0] == "3":  # Go Live
+            return _plain(go_live(space.name, phone_number))
+
+    # Handle Manage Members submenu
+    if session["state"] == "manage_members" and len(parts) == 1:
+        space = _current_space_for_host(phone_number, session.get("space_name"))
+        if not space:
+            _clear_session(phone_number)
+            return _plain("END Space not found. Please start over.")
+
+        if parts[0] == "1":  # Add Member
+            _update_session(phone_number, state="add_member_phone", step=4)
+            return _plain("CON Enter member phone number")
+
+        if parts[0] == "2":  # Remove Member
+            _update_session(phone_number, state="remove_member_phone", step=4)
+            return _plain("CON Enter member phone number to remove")
+
+        if parts[0] == "3":  # View Members
+            return _plain(_members_text(space))
+
+        if parts[0] == "4":  # Back
+            _update_session(phone_number, state="space_dashboard", step=2)
+            return _plain(_space_dashboard(space))
+
+    # Handle Add Member phone input
+    if session["state"] == "add_member_phone" and len(parts) == 1:
+        space = _current_space_for_host(phone_number, session.get("space_name"))
+        if not space:
+            _clear_session(phone_number)
+            return _plain("END Space not found. Please start over.")
+
+        member_phone = _normalize_phone(parts[0])
         _, created = SpaceInvitee.objects.get_or_create(
             space=space,
             phone_number=member_phone,
         )
         if not created:
+            _update_session(phone_number, state="manage_members", step=3)
             return _plain("END That number is already invited.")
 
         _send_invite_sms(member_phone, space)
+        _update_session(phone_number, state="manage_members", step=3)
         return _plain(f"END {member_phone} invited to {space.name}.")
 
-    if len(parts) == 4 and parts[0] == "1" and parts[2] == "1" and parts[3] == "2":
-        return _plain("CON Enter member phone number to remove")
-
-    if len(parts) == 5 and parts[0] == "1" and parts[2] == "1" and parts[3] == "2":
-        space = _current_space_for_host(phone_number, parts[1])
+    # Handle Remove Member phone input
+    if session["state"] == "remove_member_phone" and len(parts) == 1:
+        space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
+            _clear_session(phone_number)
             return _plain("END Space not found. Please start over.")
 
-        member_phone = _normalize_phone(parts[4])
+        member_phone = _normalize_phone(parts[0])
         deleted, _ = SpaceInvitee.objects.filter(space=space, phone_number=member_phone).delete()
+        _update_session(phone_number, state="manage_members", step=3)
         return _plain("END Member removed." if deleted else "END Member not found in this space.")
 
-    if len(parts) == 4 and parts[0] == "1" and parts[2] == "1" and parts[3] == "3":
-        space = _current_space_for_host(phone_number, parts[1])
+    # Handle Manage Space submenu
+    if session["state"] == "manage_space" and len(parts) == 1:
+        space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
+            _clear_session(phone_number)
             return _plain("END Space not found. Please start over.")
-        return _plain(_members_text(space))
 
-    if len(parts) == 4 and parts[0] == "1" and parts[2] == "1" and parts[3] == "4":
-        space = _current_space_for_host(phone_number, parts[1])
+        if parts[0] == "1":  # Edit Space Name
+            _update_session(phone_number, state="edit_space_name", step=4)
+            return _plain("CON Enter the new Space name")
+
+        if parts[0] == "2":  # Go Live
+            return _plain(go_live(space.name, phone_number))
+
+        if parts[0] == "3":  # Back
+            _update_session(phone_number, state="space_dashboard", step=2)
+            return _plain(_space_dashboard(space))
+
+    # Handle Edit Space Name input
+    if session["state"] == "edit_space_name" and len(parts) == 1:
+        space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
+            _clear_session(phone_number)
             return _plain("END Space not found. Please start over.")
-        return _plain(_space_dashboard(space))
 
-    if len(parts) == 3 and parts[0] == "1" and parts[2] == "2":
-        space = _current_space_for_host(phone_number, parts[1])
-        if not space:
-            return _plain("END No active space found.")
-        return _plain(_space_manage_menu(space))
-
-    if len(parts) == 4 and parts[0] == "1" and parts[2] == "2" and parts[3] == "1":
-        return _plain("CON Enter the new Space name")
-
-    if len(parts) == 5 and parts[0] == "1" and parts[2] == "2" and parts[3] == "1":
-        old_name = _sanitize_space_name(parts[1])
-        new_name = _sanitize_space_name(parts[4])
-        space = _current_space_for_host(phone_number, old_name)
-        if not space:
-            return _plain("END Space not found. Please start over.")
+        new_name = _sanitize_space_name(parts[0])
         if Space.objects.filter(name=new_name, host_phone=phone_number).exclude(pk=space.pk).exists():
+            _update_session(phone_number, state="manage_space", step=3)
             return _plain("END That space name already exists.")
+
         space.name = new_name
         space.save(update_fields=["name"])
+        _update_session(phone_number, state="space_dashboard", space_name=new_name, step=2)
         return _plain(_space_dashboard(space))
 
-    if len(parts) == 4 and parts[0] == "1" and parts[2] == "2" and parts[3] == "2":
-        space = _current_space_for_host(phone_number, parts[1])
-        if not space:
-            return _plain("END Space not found. Please start over.")
-        return _plain(go_live(space.name, phone_number))
-
-    if len(parts) == 4 and parts[0] == "1" and parts[2] == "2" and parts[3] == "3":
-        space = _current_space_for_host(phone_number, parts[1])
-        if not space:
-            return _plain("END Space not found. Please start over.")
-        return _plain(_space_dashboard(space))
-
-    if len(parts) == 3 and parts[0] == "1" and parts[2] == "3":
-        space = _current_space_for_host(phone_number, parts[1])
-        if not space:
-            return _plain("END Space not found. Please start over.")
-        return _plain(go_live(space.name, phone_number))
-
+    # Handle "Join a Space" flow
     if text == "2":
+        _update_session(phone_number, state="join_space_pin", step=1)
         return _plain("CON Enter Space PIN")
 
-    if len(parts) == 2 and parts[0] == "2":
-        pin = parts[1].strip()
+    if session["state"] == "join_space_pin" and len(parts) == 1:
+        pin = parts[0].strip()
         try:
             space = Space.objects.get(pin=pin)
         except Space.DoesNotExist:
-            return _plain("END Invalid Space PIN.")
+            _update_session(phone_number, state="join_space_pin", step=1)
+            return _plain("END Invalid Space PIN. Please try again.")
 
         if _normalize_phone(space.host_phone) == phone_number:
+            _update_session(phone_number, state="space_dashboard", space_name=space.name, step=2)
             return _plain(_space_dashboard(space))
 
         SpaceInvitee.objects.get_or_create(
             space=space,
             phone_number=phone_number,
         )
+        _clear_session(phone_number)
         return _plain(
             f"END You are registered for {space.name}.\n"
             f"Dial the voice line and enter PIN {space.pin} to join."
         )
 
+    # Handle "Browse Spaces" flow
     if text == "3":
+        _update_session(phone_number, state="browse_spaces", step=1)
         return _plain(_browse_menu())
 
-    if len(parts) == 2 and parts[0] == "3":
+    if session["state"] == "browse_spaces" and len(parts) == 1:
         spaces = _active_spaces()
         try:
-            index = int(parts[1]) - 1
+            index = int(parts[0]) - 1
             space = spaces[index]
         except (ValueError, IndexError):
-            return _plain("END Invalid option.")
+            _update_session(phone_number, state="browse_spaces", step=1)
+            return _plain("END Invalid option. Please select a valid number.")
 
         if _normalize_phone(phone_number) == _normalize_phone(space.host_phone):
+            _update_session(phone_number, state="space_dashboard", space_name=space.name, step=2)
             return _plain(_space_dashboard(space))
 
         SpaceInvitee.objects.get_or_create(
             space=space,
             phone_number=_normalize_phone(phone_number),
         )
+        _clear_session(phone_number)
         return _plain(
             f"END {space.name}\n"
             f"PIN: {space.pin}\n"
             "Dial the YoSpaces voice number and enter the PIN to join."
         )
 
+    # Handle About and Exit
     if text == "4":
+        _clear_session(phone_number)
         return _plain("END YoSpaces is a 2G-first social audio platform built for local communities.")
 
     if text == "5":
+        _clear_session(phone_number)
         return _plain("END Thanks for using YoSpaces.")
 
-    return _plain("END Invalid option. Please try again.")
+    # Invalid option - provide helpful error message based on current state
+    state_messages = {
+        "main_menu": "END Invalid option. Please select 1-5.",
+        "host_space_name": "END Invalid space name. Please try again.",
+        "space_dashboard": "END Invalid option. Please select 1-3.",
+        "manage_members": "END Invalid option. Please select 1-4.",
+        "add_member_phone": "END Invalid phone number. Please enter a valid number.",
+        "remove_member_phone": "END Invalid phone number. Please enter a valid number.",
+        "manage_space": "END Invalid option. Please select 1-3.",
+        "edit_space_name": "END Invalid space name. Please try again.",
+        "join_space_pin": "END Invalid PIN. Please enter a 4-digit PIN.",
+        "browse_spaces": "END Invalid option. Please select a valid space number.",
+    }
+    msg = state_messages.get(session["state"], "END Invalid option. Please try again.")
+    return _plain(msg)
 
 
 @csrf_exempt
