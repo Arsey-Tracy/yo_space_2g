@@ -1,8 +1,8 @@
+
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import urllib.error
 import urllib.parse
@@ -23,10 +23,9 @@ except Exception:  # pragma: no cover - optional during local edits
 
 logger = logging.getLogger("yospaces")
 
-# Load configuration from Django settings (which loads from .env)
-AT_VOICE_NUMBER = getattr(settings, 'AT_VOICE_NUMBER', "+256323200925")
-AFRICASTALKING_LIVE_USERNAME = getattr(settings, 'AFRICASTALKING_LIVE_USERNAME', "yo_space")
-AFRICASTALKING_LIVE_API_KEY = getattr(settings, 'AFRICASTALKING_LIVE_API_KEY', "")
+AT_VOICE_NUMBER = getattr(settings, "AT_VOICE_NUMBER", "+256323200925")
+AFRICASTALKING_LIVE_USERNAME = getattr(settings, "AFRICASTALKING_LIVE_USERNAME", "yo_space")
+AFRICASTALKING_LIVE_API_KEY = getattr(settings, "AFRICASTALKING_LIVE_API_KEY", "")
 AT_CONFERENCE_URL = "https://voice.africastalking.com/conference"
 AT_CALL_URL = "https://voice.africastalking.com/call"
 
@@ -45,30 +44,26 @@ def _xml(text: str) -> HttpResponse:
     return HttpResponse(text, content_type="text/xml")
 
 
-# Session state tracking for USSD flow
-# In production, use Django cache or database-backed sessions
 _ussd_sessions = {}
 
 
 def _get_session(phone_number: str) -> dict:
-    """Get or create USSD session for a phone number."""
     if phone_number not in _ussd_sessions:
         _ussd_sessions[phone_number] = {
             "state": "main_menu",
             "space_name": None,
             "step": 0,
+            "browse_ids": [],
         }
     return _ussd_sessions[phone_number]
 
 
 def _update_session(phone_number: str, **kwargs) -> None:
-    """Update USSD session state."""
     session = _get_session(phone_number)
     session.update(kwargs)
 
 
 def _clear_session(phone_number: str) -> None:
-    """Clear USSD session."""
     if phone_number in _ussd_sessions:
         del _ussd_sessions[phone_number]
 
@@ -83,16 +78,12 @@ def _normalize_phone(phone: str) -> str:
         return "+256" + phone[1:]
     return "+" + phone
 
+
 def _current_input(text: str) -> str:
-    """
-    Return the latest USSD input.
-    Examples:
-        "1" -> "1"
-        "1*DevTalk" -> "DevTalk"
-        "1*1*256700123456" -> "256700123456"
-    """
     parts = (text or "").split("*")
     return parts[-1].strip() if parts else ""
+
+
 def _sanitize_space_name(name: str) -> str:
     name = (name or "").strip()
     name = re.sub(r"\s+", " ", name)
@@ -138,20 +129,23 @@ def _space_manage_menu(space: Space) -> str:
     )
 
 
-def _browse_menu() -> str:
+def _active_spaces(limit: int = 5):
+    return list(Space.objects.order_by("-created_at", "-id")[:limit])
+
+
+def _browse_menu() -> tuple[str, list[int]]:
     spaces = _active_spaces()
     if not spaces:
-        return "END No active spaces right now."
+        return "END No spaces available right now.", []
 
     lines = ["CON Browse Spaces"]
+    browse_ids = []
     for idx, space in enumerate(spaces, start=1):
-        lines.append(f"{idx}. {space.name}")
+        browse_ids.append(space.id)
+        status = "LIVE" if space.is_active else "Offline"
+        lines.append(f"{idx}. {space.name} ({status})")
     lines.append("Reply with the number")
-    return "\n".join(lines)
-
-
-def _active_spaces(limit: int = 5):
-    return list(Space.objects.filter(is_active=True).order_by("-created_at", "-id")[:limit])
+    return "\n".join(lines), browse_ids
 
 
 def _members_text(space: Space) -> str:
@@ -184,8 +178,11 @@ def _send_invite_sms(phone_number: str, space: Space) -> None:
 
 
 def _call_invitees(space: Space) -> None:
-    """Best-effort outbound calls. The room still works without this."""
-    participants = []
+    """
+    Best-effort outbound calls. The room still works without this.
+    Tries SDK first; falls back to REST so clientRequestId can be sent.
+    """
+    participants: list[str] = []
     for invitee in space.invitees.all():
         phone = _normalize_phone(invitee.phone_number)
         if phone and phone not in participants:
@@ -194,10 +191,6 @@ def _call_invitees(space: Space) -> None:
     if not participants:
         return
 
-    # Reuse the room PIN as the clientRequestId. AT echoes it back on the
-    # call's voice callback, which is what lets voice_callback() recognize
-    # these are go-live calls and drop the recipient straight into the
-    # conference instead of prompting them for a PIN.
     client_request_id = space.pin
 
     try:
@@ -206,20 +199,11 @@ def _call_invitees(space: Space) -> None:
             call_fn = getattr(voice_client, "call", None)
             if callable(call_fn):
                 try:
-                    call_fn(AT_VOICE_NUMBER, participants, client_request_id)
+                    call_fn(AT_VOICE_NUMBER, participants)
                     logger.info("SDK call placed for %s", space.name)
                     return
                 except TypeError:
-                    try:
-                        call_fn(AT_VOICE_NUMBER, participants)
-                        logger.info(
-                            "SDK call placed for %s (installed SDK does not accept clientRequestId; "
-                            "recipients will be prompted for the PIN instead of auto-joining)",
-                            space.name,
-                        )
-                        return
-                    except TypeError:
-                        pass
+                    pass
     except Exception as exc:
         logger.warning("SDK voice call failed for %s: %s", space.name, exc)
 
@@ -231,7 +215,7 @@ def _call_invitees(space: Space) -> None:
         {
             "username": AFRICASTALKING_LIVE_USERNAME,
             "from": AT_VOICE_NUMBER,
-            "to": ",".join(participants),
+            "to": "[" + ", ".join(participants) + "]",
             "clientRequestId": client_request_id,
         }
     ).encode("utf-8")
@@ -300,21 +284,14 @@ def go_live(space_name: str, host_phone: str) -> str:
 def ussd_callback(request):
     if request.method != "POST":
         return _plain("END Invalid request method.")
-    
-    service_code = request.POST.get("serviceCode", "")
-    session_id = request.POST.get("sessionId", "")
-    phone_number = _normalize_phone(request.POST.get("phoneNumber", ""))
-    # text = (request.POST.get("text", "") or "").strip()
-    # parts = text.split("*") if text else []
 
+    phone_number = _normalize_phone(request.POST.get("phoneNumber", ""))
     text = (request.POST.get("text", "") or "").strip()
-    parts = text.split("*") if text else []
     current = _current_input(text)
     session = _get_session(phone_number)
 
-    # Handle main menu
     if text == "":
-        _update_session(phone_number, state="main_menu", space_name=None, step=0)
+        _update_session(phone_number, state="main_menu", space_name=None, step=0, browse_ids=[])
         return _plain(
             "CON Welcome to YoSpaces\n"
             "1. Host a Space\n"
@@ -324,80 +301,65 @@ def ussd_callback(request):
             "5. Exit"
         )
 
-    # Handle "Host a Space" flow
     if text == "1":
         _update_session(phone_number, state="host_space_name", step=1)
         return _plain("CON Enter a name for your Space")
 
     if session["state"] == "host_space_name":
         space_name = _sanitize_space_name(current)
-
-        space, _ = Space.objects.get_or_create(
+        space, _created = Space.objects.get_or_create(
             name=space_name,
             host_phone=phone_number,
         )
-
-        _update_session(
-            phone_number,
-            state="space_dashboard",
-            space_name=space.name,
-            step=2,
-        )
-
+        _update_session(phone_number, state="space_dashboard", space_name=space.name, step=2)
         return _plain(_space_dashboard(space))
 
-    # Handle space dashboard options
     if session["state"] == "space_dashboard":
         space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
             _clear_session(phone_number)
             return _plain("END Space not found. Please start over.")
 
-        if current == "1":  # Manage Members
+        if current == "1":
             _update_session(phone_number, state="manage_members", step=3)
             return _plain(_space_members_menu())
 
-        if current == "2":  # Manage Space
+        if current == "2":
             _update_session(phone_number, state="manage_space", step=3)
             return _plain(_space_manage_menu(space))
 
-        if current == "3":  # Go Live
+        if current == "3":
             return _plain(go_live(space.name, phone_number))
 
-    # Handle Manage Members submenu
-    if session["state"] == "manage_members" == 1:
+    if session["state"] == "manage_members":
         space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
             _clear_session(phone_number)
             return _plain("END Space not found. Please start over.")
 
-        if current == "1":  # Add Member
+        if current == "1":
             _update_session(phone_number, state="add_member_phone", step=4)
             return _plain("CON Enter member phone number")
 
-        if current == "2":  # Remove Member
+        if current == "2":
             _update_session(phone_number, state="remove_member_phone", step=4)
             return _plain("CON Enter member phone number to remove")
 
-        if current == "3":  # View Members
+        if current == "3":
             return _plain(_members_text(space))
 
-        if current == "4":  # Back
+        if current == "4":
             _update_session(phone_number, state="space_dashboard", step=2)
             return _plain(_space_dashboard(space))
 
-    # Handle Add Member phone input
-    if session["state"] == "add_member_phone" == 1:
+    if session["state"] == "add_member_phone":
         space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
             _clear_session(phone_number)
             return _plain("END Space not found. Please start over.")
 
         member_phone = _normalize_phone(current)
-        _, created = SpaceInvitee.objects.get_or_create(
-            space=space,
-            phone_number=member_phone,
-        )
+        _, created = SpaceInvitee.objects.get_or_create(space=space, phone_number=member_phone)
         if not created:
             _update_session(phone_number, state="manage_members", step=3)
             return _plain("END That number is already invited.")
@@ -406,8 +368,7 @@ def ussd_callback(request):
         _update_session(phone_number, state="manage_members", step=3)
         return _plain(f"END {member_phone} invited to {space.name}.")
 
-    # Handle Remove Member phone input
-    if session["state"] == "remove_member_phone" == 1:
+    if session["state"] == "remove_member_phone":
         space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
             _clear_session(phone_number)
@@ -418,26 +379,24 @@ def ussd_callback(request):
         _update_session(phone_number, state="manage_members", step=3)
         return _plain("END Member removed." if deleted else "END Member not found in this space.")
 
-    # Handle Manage Space submenu
-    if session["state"] == "manage_space" == 1:
+    if session["state"] == "manage_space":
         space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
             _clear_session(phone_number)
             return _plain("END Space not found. Please start over.")
 
-        if current == "1":  # Edit Space Name
+        if current == "1":
             _update_session(phone_number, state="edit_space_name", step=4)
             return _plain("CON Enter the new Space name")
 
-        if current == "2":  # Go Live
+        if current == "2":
             return _plain(go_live(space.name, phone_number))
 
-        if current == "3":  # Back
+        if current == "3":
             _update_session(phone_number, state="space_dashboard", step=2)
             return _plain(_space_dashboard(space))
 
-    # Handle Edit Space Name input
-    if session["state"] == "edit_space_name" == 1:
+    if session["state"] == "edit_space_name":
         space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
             _clear_session(phone_number)
@@ -453,12 +412,11 @@ def ussd_callback(request):
         _update_session(phone_number, state="space_dashboard", space_name=new_name, step=2)
         return _plain(_space_dashboard(space))
 
-    # Handle "Join a Space" flow
     if text == "2":
         _update_session(phone_number, state="join_space_pin", step=1)
         return _plain("CON Enter Space PIN")
 
-    if session["state"] == "join_space_pin" == 1:
+    if session["state"] == "join_space_pin":
         pin = current.strip()
         try:
             space = Space.objects.get(pin=pin)
@@ -470,38 +428,54 @@ def ussd_callback(request):
             _update_session(phone_number, state="space_dashboard", space_name=space.name, step=2)
             return _plain(_space_dashboard(space))
 
-        SpaceInvitee.objects.get_or_create(
-            space=space,
-            phone_number=phone_number,
-        )
+        SpaceInvitee.objects.get_or_create(space=space, phone_number=phone_number)
         _clear_session(phone_number)
         return _plain(
             f"END You are registered for {space.name}.\n"
             f"Dial the voice line and enter PIN {space.pin} to join."
         )
 
-    # Handle "Browse Spaces" flow
     if text == "3":
-        _update_session(phone_number, state="browse_spaces", step=1)
-        return _plain(_browse_menu())
+        browse_text, browse_ids = _browse_menu()
+        if browse_ids:
+            _update_session(phone_number, state="browse_spaces", step=1, browse_ids=browse_ids)
+        return _plain(browse_text)
 
-    if session["state"] == "browse_spaces" == 1:
-        spaces = _active_spaces()
+    if session["state"] == "browse_spaces":
+        browse_ids = session.get("browse_ids") or []
+        if not browse_ids:
+            browse_text, browse_ids = _browse_menu()
+            if not browse_ids:
+                _update_session(phone_number, state="main_menu", browse_ids=[], step=0)
+                return _plain(browse_text)
+            _update_session(phone_number, browse_ids=browse_ids)
+
         try:
             index = int(current) - 1
-            space = spaces[index]
-        except (ValueError, IndexError):
-            _update_session(phone_number, state="browse_spaces", step=1)
-            return _plain("END Invalid option. Please select a valid number.")
+        except ValueError:
+            return _plain("END Invalid option. Please select a valid space number.")
+
+        if index < 0 or index >= len(browse_ids):
+            return _plain("END Invalid option. Please select a valid space number.")
+
+        try:
+            space = Space.objects.get(pk=browse_ids[index])
+        except Space.DoesNotExist:
+            return _plain("END That space is no longer available. Please browse again.")
 
         if _normalize_phone(phone_number) == _normalize_phone(space.host_phone):
             _update_session(phone_number, state="space_dashboard", space_name=space.name, step=2)
             return _plain(_space_dashboard(space))
 
-        SpaceInvitee.objects.get_or_create(
-            space=space,
-            phone_number=_normalize_phone(phone_number),
-        )
+        SpaceInvitee.objects.get_or_create(space=space, phone_number=phone_number)
+
+        if not space.is_active:
+            return _plain(
+                f"END {space.name} is not live yet.\n"
+                f"PIN: {space.pin}\n"
+                "Try again once the host starts the room."
+            )
+
         _clear_session(phone_number)
         return _plain(
             f"END {space.name}\n"
@@ -509,7 +483,6 @@ def ussd_callback(request):
             "Dial the YoSpaces voice number and enter the PIN to join."
         )
 
-    # Handle About and Exit
     if text == "4":
         _clear_session(phone_number)
         return _plain("END YoSpaces is a 2G-first social audio platform built for local communities.")
@@ -518,21 +491,7 @@ def ussd_callback(request):
         _clear_session(phone_number)
         return _plain("END Thanks for using YoSpaces.")
 
-    # Invalid option - provide helpful error message based on current state
-    state_messages = {
-        "main_menu": "END Invalid option. Please select 1-5.",
-        "host_space_name": "END Invalid space name. Please try again.",
-        "space_dashboard": "END Invalid option. Please select 1-3.",
-        "manage_members": "END Invalid option. Please select 1-4.",
-        "add_member_phone": "END Invalid phone number. Please enter a valid number.",
-        "remove_member_phone": "END Invalid phone number. Please enter a valid number.",
-        "manage_space": "END Invalid option. Please select 1-3.",
-        "edit_space_name": "END Invalid space name. Please try again.",
-        "join_space_pin": "END Invalid PIN. Please enter a 4-digit PIN.",
-        "browse_spaces": "END Invalid option. Please select a valid space number.",
-    }
-    msg = state_messages.get(session["state"], "END Invalid option. Please try again.")
-    return _plain(msg)
+    return _plain("END Invalid option. Please try again.")
 
 
 @csrf_exempt
