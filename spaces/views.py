@@ -24,14 +24,13 @@ def ussd_callback(request):
     # MAIN MENU
     # ==========================
     if text == "":
-        response = (
-            "CON Welcome to YoSpaces\n"
-            "1. Host a Space\n"
-            "2. Join a Space\n"
-            "3. Browse Spaces\n"
-            "4. About YoSpaces\n"
-            "5. Exit"
-        )
+        response = "CON Welcome to YoSpaces\n"
+        response += "1. Host a Space\n"
+        response += "2. Join a Space\n"
+        response += "3. Browse Spaces\n"
+        response += "4. About YoSpaces\n"
+        response += "5. Exit"
+        
 
     # ==========================
     # HOST SPACE
@@ -47,24 +46,21 @@ def ussd_callback(request):
             host_phone=phone_number
         )
 
-        response = (
-            f"CON {space.name} Dashboard\n"
-            "1. Manage Members\n"
-            "2. Manage Space\n"
-            "3. Go Live"
-        )
+        response = f"CON {space.name} Dashboard\n"
+        response += "1. Manage Members\n"
+        response += "2. Manage Space\n"
+        response += "3. Go Live"
+        
 
     # ==========================
     # MANAGE MEMBERS
     # ==========================
     elif len(input_parts) == 3 and input_parts[0] == "1" and input_parts[2] == "1":
 
-        response = (
-            "CON Manage Members\n"
-            "1. Add Member\n"
-            "2. Remove Member\n"
-            "3. View Members"
-        )
+        response = "CON Manage Members\n"
+        response += "1. Add Member\n"
+        response += "2. Remove Member\n"
+        response += "3. View Members"
 
     # ==========================
     # MANAGE SPACE
@@ -76,11 +72,10 @@ def ussd_callback(request):
                 host_phone=phone_number
             ).latest("id")
 
-            response = (
-                f"CON {space.name}\n"
-                "1. Edit Space\n"
-                "2. Go Live"
-            )
+            response =  f"CON {space.name}\n"
+            response += "1. Edit Space\n"
+            response += "2. Go Live"
+            
 
         except Space.DoesNotExist:
             response = "END No active space found."
@@ -90,10 +85,8 @@ def ussd_callback(request):
     # ==========================
     elif len(input_parts) == 3 and input_parts[0] == "1" and input_parts[2] == "3":
 
-        response = (
-            "END Space is Live!\n"
-            "Participants will receive calls shortly."
-        )
+        response =  "END Space is Live!\n Participants will receive calls shortly."
+      
 
     # ==========================
     # JOIN SPACE
@@ -108,9 +101,7 @@ def ussd_callback(request):
         try:
             space = Space.objects.get(pin=pin)
 
-            response = (
-                f"END Joined {space.name} successfully!"
-            )
+            response =  f"END Joined {space.name} successfully!"
 
         except Space.DoesNotExist:
             response = "END Invalid Space PIN."
@@ -125,10 +116,7 @@ def ussd_callback(request):
     # ABOUT
     # ==========================
     elif text == "4":
-        response = (
-            "END YoSpaces is a 2G-first social audio platform "
-            "built for local communities."
-        )
+        response =  "END YoSpaces is a 2G-first social audio platform built for local communities."
 
     # ==========================
     # EXIT

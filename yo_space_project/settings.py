@@ -73,7 +73,7 @@ TEMPLATES = [
         },
     },
 ]
-
+APPEND_SLASH = False
 WSGI_APPLICATION = "yo_space_project.wsgi.application"
 
 
