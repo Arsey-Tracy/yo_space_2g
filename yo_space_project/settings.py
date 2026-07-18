@@ -30,7 +30,8 @@ ALLOWED_HOSTS = [
     "127.0.0.1",
     "localhost",
 ]
-
+AFRICASTALKING_LIVE_USERNAME = "yo_space"
+AFRICASTALKING_LIVE_API_KEY = "atsk_d0ad900cfea42fa2fca26ee5bc47964c8e1e092d5565e4c0ce5217a82c5267ed079ab373"
 
 # Application definition
 
