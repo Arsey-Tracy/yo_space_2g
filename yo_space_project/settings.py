@@ -30,8 +30,15 @@ ALLOWED_HOSTS = [
     "127.0.0.1",
     "localhost",
 ]
+AT_VOICE_NUMBER = "+256323200925"
+
 AFRICASTALKING_LIVE_USERNAME = "yo_space"
 AFRICASTALKING_LIVE_API_KEY = "atsk_d0ad900cfea42fa2fca26ee5bc47964c8e1e092d5565e4c0ce5217a82c5267ed079ab373"
+
+AT_CONFERENCE_URL = "https://voice.africastalking.com/conference"
+
+AT_CALL_URL = "https://voice.africastalking.com/call"
+
 
 # Application definition
 
