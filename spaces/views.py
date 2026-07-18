@@ -83,7 +83,16 @@ def _normalize_phone(phone: str) -> str:
         return "+256" + phone[1:]
     return "+" + phone
 
-
+def _current_input(text: str) -> str:
+    """
+    Return the latest USSD input.
+    Examples:
+        "1" -> "1"
+        "1*DevTalk" -> "DevTalk"
+        "1*1*256700123456" -> "256700123456"
+    """
+    parts = (text or "").split("*")
+    return parts[-1].strip() if parts else ""
 def _sanitize_space_name(name: str) -> str:
     name = (name or "").strip()
     name = re.sub(r"\s+", " ", name)
@@ -291,11 +300,16 @@ def go_live(space_name: str, host_phone: str) -> str:
 def ussd_callback(request):
     if request.method != "POST":
         return _plain("END Invalid request method.")
-
+    
+    service_code = request.POST.get("serviceCode", "")
+    session_id = request.POST.get("sessionId", "")
     phone_number = _normalize_phone(request.POST.get("phoneNumber", ""))
+    # text = (request.POST.get("text", "") or "").strip()
+    # parts = text.split("*") if text else []
+
     text = (request.POST.get("text", "") or "").strip()
     parts = text.split("*") if text else []
-
+    current = _current_input(text)
     session = _get_session(phone_number)
 
     # Handle main menu
@@ -315,63 +329,71 @@ def ussd_callback(request):
         _update_session(phone_number, state="host_space_name", step=1)
         return _plain("CON Enter a name for your Space")
 
-    if session["state"] == "host_space_name" and len(parts) == 1:
-        space_name = _sanitize_space_name(parts[0])
-        space, _created = Space.objects.get_or_create(
+    if session["state"] == "host_space_name":
+        space_name = _sanitize_space_name(current)
+
+        space, _ = Space.objects.get_or_create(
             name=space_name,
             host_phone=phone_number,
         )
-        _update_session(phone_number, state="space_dashboard", space_name=space.name, step=2)
+
+        _update_session(
+            phone_number,
+            state="space_dashboard",
+            space_name=space.name,
+            step=2,
+        )
+
         return _plain(_space_dashboard(space))
 
     # Handle space dashboard options
-    if session["state"] == "space_dashboard" and len(parts) == 1:
+    if session["state"] == "space_dashboard":
         space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
             _clear_session(phone_number)
             return _plain("END Space not found. Please start over.")
 
-        if parts[0] == "1":  # Manage Members
+        if current == "1":  # Manage Members
             _update_session(phone_number, state="manage_members", step=3)
             return _plain(_space_members_menu())
 
-        if parts[0] == "2":  # Manage Space
+        if current == "2":  # Manage Space
             _update_session(phone_number, state="manage_space", step=3)
             return _plain(_space_manage_menu(space))
 
-        if parts[0] == "3":  # Go Live
+        if current == "3":  # Go Live
             return _plain(go_live(space.name, phone_number))
 
     # Handle Manage Members submenu
-    if session["state"] == "manage_members" and len(parts) == 1:
+    if session["state"] == "manage_members" == 1:
         space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
             _clear_session(phone_number)
             return _plain("END Space not found. Please start over.")
 
-        if parts[0] == "1":  # Add Member
+        if current == "1":  # Add Member
             _update_session(phone_number, state="add_member_phone", step=4)
             return _plain("CON Enter member phone number")
 
-        if parts[0] == "2":  # Remove Member
+        if current == "2":  # Remove Member
             _update_session(phone_number, state="remove_member_phone", step=4)
             return _plain("CON Enter member phone number to remove")
 
-        if parts[0] == "3":  # View Members
+        if current == "3":  # View Members
             return _plain(_members_text(space))
 
-        if parts[0] == "4":  # Back
+        if current == "4":  # Back
             _update_session(phone_number, state="space_dashboard", step=2)
             return _plain(_space_dashboard(space))
 
     # Handle Add Member phone input
-    if session["state"] == "add_member_phone" and len(parts) == 1:
+    if session["state"] == "add_member_phone" == 1:
         space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
             _clear_session(phone_number)
             return _plain("END Space not found. Please start over.")
 
-        member_phone = _normalize_phone(parts[0])
+        member_phone = _normalize_phone(current)
         _, created = SpaceInvitee.objects.get_or_create(
             space=space,
             phone_number=member_phone,
@@ -385,43 +407,43 @@ def ussd_callback(request):
         return _plain(f"END {member_phone} invited to {space.name}.")
 
     # Handle Remove Member phone input
-    if session["state"] == "remove_member_phone" and len(parts) == 1:
+    if session["state"] == "remove_member_phone" == 1:
         space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
             _clear_session(phone_number)
             return _plain("END Space not found. Please start over.")
 
-        member_phone = _normalize_phone(parts[0])
+        member_phone = _normalize_phone(current)
         deleted, _ = SpaceInvitee.objects.filter(space=space, phone_number=member_phone).delete()
         _update_session(phone_number, state="manage_members", step=3)
         return _plain("END Member removed." if deleted else "END Member not found in this space.")
 
     # Handle Manage Space submenu
-    if session["state"] == "manage_space" and len(parts) == 1:
+    if session["state"] == "manage_space" == 1:
         space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
             _clear_session(phone_number)
             return _plain("END Space not found. Please start over.")
 
-        if parts[0] == "1":  # Edit Space Name
+        if current == "1":  # Edit Space Name
             _update_session(phone_number, state="edit_space_name", step=4)
             return _plain("CON Enter the new Space name")
 
-        if parts[0] == "2":  # Go Live
+        if current == "2":  # Go Live
             return _plain(go_live(space.name, phone_number))
 
-        if parts[0] == "3":  # Back
+        if current == "3":  # Back
             _update_session(phone_number, state="space_dashboard", step=2)
             return _plain(_space_dashboard(space))
 
     # Handle Edit Space Name input
-    if session["state"] == "edit_space_name" and len(parts) == 1:
+    if session["state"] == "edit_space_name" == 1:
         space = _current_space_for_host(phone_number, session.get("space_name"))
         if not space:
             _clear_session(phone_number)
             return _plain("END Space not found. Please start over.")
 
-        new_name = _sanitize_space_name(parts[0])
+        new_name = _sanitize_space_name(current)
         if Space.objects.filter(name=new_name, host_phone=phone_number).exclude(pk=space.pk).exists():
             _update_session(phone_number, state="manage_space", step=3)
             return _plain("END That space name already exists.")
@@ -436,8 +458,8 @@ def ussd_callback(request):
         _update_session(phone_number, state="join_space_pin", step=1)
         return _plain("CON Enter Space PIN")
 
-    if session["state"] == "join_space_pin" and len(parts) == 1:
-        pin = parts[0].strip()
+    if session["state"] == "join_space_pin" == 1:
+        pin = current.strip()
         try:
             space = Space.objects.get(pin=pin)
         except Space.DoesNotExist:
@@ -463,10 +485,10 @@ def ussd_callback(request):
         _update_session(phone_number, state="browse_spaces", step=1)
         return _plain(_browse_menu())
 
-    if session["state"] == "browse_spaces" and len(parts) == 1:
+    if session["state"] == "browse_spaces" == 1:
         spaces = _active_spaces()
         try:
-            index = int(parts[0]) - 1
+            index = int(current) - 1
             space = spaces[index]
         except (ValueError, IndexError):
             _update_session(phone_number, state="browse_spaces", step=1)
