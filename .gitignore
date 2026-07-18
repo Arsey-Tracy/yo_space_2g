@@ -1,0 +1,55 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Enviroments
+venv/
+
+
+# Secrets & Enviroment Variables
+.env
+# .env.*
+*.env
+
+# Local Databases
+db.sqlite3
+
+# static file collected by django
+staticfiles/
+
+# Media Uploads
+media/
+
+# Django cache
+.log
+.pot
+.mo
+
+# Secrets and credentials
+
+# *.pem
+# *.key
+# *.crt
+# secrets/
+# credentials/
+# config/secrets
+
+# # API keys
+# apikeys/
+# *.json
+# # Exception: allow safe JSON files
+# !fixtures/*.json
+
+# Testing
+# .pytest_cache/
+# .coverage
+# htmlcov/
+
+# IDEs
+.vscode/
+.idea/
+
+# OS files
+
+.DS_Store
+Thumb.db
