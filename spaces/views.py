@@ -27,6 +27,12 @@ AFRICASTALKING_LIVE_API_KEY = "atsk_d0ad900cfea42fa2fca26ee5bc47964c8e1e092d5565
 AT_CONFERENCE_URL = "https://voice.africastalking.com/conference"
 AT_CALL_URL = "https://voice.africastalking.com/call"
 
+if africastalking:
+    try:
+        africastalking.initialize(AFRICASTALKING_LIVE_USERNAME, AFRICASTALKING_LIVE_API_KEY)
+    except Exception as exc:  # pragma: no cover - depends on installed SDK
+        logger.warning("Africa's Talking SDK initialization failed: %s", exc)
+
 
 def _plain(text: str) -> HttpResponse:
     return HttpResponse(text, content_type="text/plain")
@@ -93,7 +99,7 @@ def _space_manage_menu(space: Space) -> str:
 
 
 def _browse_menu() -> str:
-    spaces = list(Space.objects.filter(is_active=True).order_by("-created_at", "-id")[:5])
+    spaces = _active_spaces()
     if not spaces:
         return "END No active spaces right now."
 
@@ -148,17 +154,32 @@ def _call_invitees(space: Space) -> None:
     if not participants:
         return
 
+    # Reuse the room PIN as the clientRequestId. AT echoes it back on the
+    # call's voice callback, which is what lets voice_callback() recognize
+    # these are go-live calls and drop the recipient straight into the
+    # conference instead of prompting them for a PIN.
+    client_request_id = space.pin
+
     try:
         if africastalking:
             voice_client = getattr(africastalking, "Voice", None)
             call_fn = getattr(voice_client, "call", None)
             if callable(call_fn):
                 try:
-                    call_fn(AT_VOICE_NUMBER, participants)
+                    call_fn(AT_VOICE_NUMBER, participants, client_request_id)
                     logger.info("SDK call placed for %s", space.name)
                     return
                 except TypeError:
-                    pass
+                    try:
+                        call_fn(AT_VOICE_NUMBER, participants)
+                        logger.info(
+                            "SDK call placed for %s (installed SDK does not accept clientRequestId; "
+                            "recipients will be prompted for the PIN instead of auto-joining)",
+                            space.name,
+                        )
+                        return
+                    except TypeError:
+                        pass
     except Exception as exc:
         logger.warning("SDK voice call failed for %s: %s", space.name, exc)
 
@@ -170,7 +191,8 @@ def _call_invitees(space: Space) -> None:
         {
             "username": AFRICASTALKING_LIVE_USERNAME,
             "from": AT_VOICE_NUMBER,
-            "to": json.dumps(participants),
+            "to": ",".join(participants),
+            "clientRequestId": client_request_id,
         }
     ).encode("utf-8")
 
@@ -375,7 +397,7 @@ def ussd_callback(request):
         return _plain(_browse_menu())
 
     if len(parts) == 2 and parts[0] == "3":
-        spaces = list(Space.objects.filter(is_active=True).order_by("-created_at")[:5])
+        spaces = _active_spaces()
         try:
             index = int(parts[1]) - 1
             space = spaces[index]
@@ -393,29 +415,6 @@ def ussd_callback(request):
             f"END {space.name}\n"
             f"PIN: {space.pin}\n"
             "Dial the YoSpaces voice number and enter the PIN to join."
-        )
-
-    if len(parts) == 2 and parts[0] == "3":
-        spaces = _active_spaces()
-        try:
-            choice = int(parts[1])
-        except ValueError:
-            return _plain("END Invalid option.")
-
-        if choice < 1 or choice > len(spaces):
-            return _plain("END Invalid option.")
-
-        space = spaces[choice - 1]
-        if _normalize_phone(space.host_phone) == phone_number:
-            return _plain(_space_dashboard(space))
-
-        SpaceInvitee.objects.get_or_create(
-            space=space,
-            phone_number=phone_number,
-        )
-        return _plain(
-            f"END {space.name} selected.\n"
-            f"Dial the voice line and enter PIN {space.pin} to join."
         )
 
     if text == "4":
