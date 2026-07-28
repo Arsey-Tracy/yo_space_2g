@@ -1,0 +1,19 @@
+from django.urls import path
+from .views import (
+    SubscriptionListView, CurrentSubscriptionView, UpgradeSubscriptionView,
+    InvoiceListView, SMSBundleListView, PurchaseSMSView,
+    SMSPurchaseHistoryView, SMSBalanceView
+)
+
+urlpatterns = [
+    path('plans/', SubscriptionListView.as_view(), name='subscription-plans'),
+    path('current/', CurrentSubscriptionView.as_view(), name='subscription-current'),
+    path('subscribe/', UpgradeSubscriptionView.as_view(), name='subscription-upgrade'),
+    path('invoices/', InvoiceListView.as_view(), name='subscription-invoices'),
+
+    # SMS Bundle Purchase (Top-Up / Pay-As-You-Go)
+    path('sms-bundles/', SMSBundleListView.as_view(), name='sms-bundles'),
+    path('sms-bundles/purchase/', PurchaseSMSView.as_view(), name='sms-purchase'),
+    path('sms-bundles/history/', SMSPurchaseHistoryView.as_view(), name='sms-purchase-history'),
+    path('sms-balance/', SMSBalanceView.as_view(), name='sms-balance'),
+]
