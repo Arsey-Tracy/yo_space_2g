@@ -216,3 +216,42 @@ class SMSBalanceView(APIView):
             'is_low_balance': org.sms_balance <= 50,
             'needs_topup': org.sms_balance <= 0,
         })
+
+
+from .marzpay import trigger_marzpay_collection
+
+
+class TestPaymentView(APIView):
+    """
+    Triggers a 1000 UGX test payment collection via MarzPay Mobile Money API.
+    Can be called during registration or from the billing portal for payment testing.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        phone_number = request.data.get('phone_number') or request.data.get('phone')
+        amount = request.data.get('amount', 1000)
+        description = request.data.get('description', 'Yo-Spaces Registration Payment Test (1000 UGX)')
+
+        if not phone_number:
+            return Response(
+                {'detail': 'Phone number is required for Mobile Money payment test.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            amount = int(amount)
+        except (ValueError, TypeError):
+            amount = 1000
+
+        result = trigger_marzpay_collection(
+            phone_number=phone_number,
+            amount=amount,
+            description=description
+        )
+
+        return Response({
+            'message': f'Mobile Money collection request of {amount} UGX triggered for {result["phone_number"]}.',
+            'marzpay_result': result
+        }, status=status.HTTP_200_OK if result.get('success') or result.get('status_code') in [200, 201] else status.HTTP_400_BAD_REQUEST)
+

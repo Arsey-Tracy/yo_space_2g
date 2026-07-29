@@ -29,11 +29,7 @@ SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-6t)&zl1h448n%v8den8805uieb
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 
-ALLOWED_HOSTS = [
-    ".onrender.com",
-    "127.0.0.1",
-    "localhost",
-]
+ALLOWED_HOSTS = ["*"]
 
 # Africa's Talking Configuration
 AT_VOICE_NUMBER = os.getenv("AFRICASTALKING_VOICE_NUMBER", "+256323200925")
@@ -43,7 +39,14 @@ AFRICASTALKING_LIVE_API_KEY = os.getenv("AFRICASTALKING_API_KEY", "atsk_d0ad900c
 AT_CONFERENCE_URL = "https://voice.africastalking.com/conference"
 AT_CALL_URL = "https://voice.africastalking.com/call"
 
+MARZPAY_API_KEY = "marz_XSdy2ucLiJxdNkvx"
+MARZPAY_API_SECRET = "6iOsdoqTuJ9yzCKchuI6cTAdB8GwsRVp"
+MARZPAY_BASE64_AUTHORIZATION_HEADER = "bWFyel9YU2R5MnVjTGlKeGROa3Z4OjZpT3Nkb3FUdUo5eXpDS2NodUk2Y1RBZEI4R3dzUlZw" # ✨ Easiest option! This is your API Key and Secret already encoded.
+MARZPAY_COLLECT_URL = "https://wallet.wearemarz.com/api/v1/collect-money"
 
+
+frontend_url = "https://yo-space-web.vercel.app/"
+backend_url = "https://yo-space-2g.onrender.com/"
 # Application definition
 
 INSTALLED_APPS = [
@@ -93,6 +96,7 @@ TEMPLATES = [
         },
     },
 ]
+
 APPEND_SLASH = False
 WSGI_APPLICATION = "yo_space_project.wsgi.application"
 
@@ -149,9 +153,34 @@ STATICFILES_STORAGE = (
     "whitenoise.storage.CompressedManifestStaticFilesStorage"
 )
 
-# CORS Settings
-CORS_ALLOW_ALL_ORIGINS = True
+# CORS & CSRF Settings
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8000",
+    "https://yo-space-web.vercel.app",
+    "https://yo-space-2g.onrender.com",
+]
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https://.*\.vercel\.app$",
+    r"^https://.*\.onrender\.com$",
+]
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_ALL_ORIGINS = False
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://*.onrender.com",
+    "https://*.vercel.app",
+    "https://yo-space-web.vercel.app",
+    "https://yo-space-2g.onrender.com",
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:8000",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+]
 
 # REST Framework & JWT Configuration
 REST_FRAMEWORK = {

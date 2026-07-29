@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     SubscriptionListView, CurrentSubscriptionView, UpgradeSubscriptionView,
     InvoiceListView, SMSBundleListView, PurchaseSMSView,
-    SMSPurchaseHistoryView, SMSBalanceView
+    SMSPurchaseHistoryView, SMSBalanceView, TestPaymentView
 )
 
 urlpatterns = [
@@ -16,4 +16,5 @@ urlpatterns = [
     path('sms-bundles/purchase/', PurchaseSMSView.as_view(), name='sms-purchase'),
     path('sms-bundles/history/', SMSPurchaseHistoryView.as_view(), name='sms-purchase-history'),
     path('sms-balance/', SMSBalanceView.as_view(), name='sms-balance'),
+    path('test-payment/', TestPaymentView.as_view(), name='test-payment'),
 ]

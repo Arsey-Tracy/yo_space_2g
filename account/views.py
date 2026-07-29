@@ -9,6 +9,9 @@ from .serializers import (
 )
 
 
+from subscriptions.marzpay import trigger_marzpay_collection
+
+
 class RegisterView(APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -17,14 +20,30 @@ class RegisterView(APIView):
         if serializer.is_valid():
             user, org = serializer.save()
             refresh = RefreshToken.for_user(user)
-            return Response({
+
+            payment_result = None
+            phone = request.data.get('phone') or user.phone
+            trigger_payment = request.data.get('trigger_test_payment', False)
+
+            if phone and trigger_payment:
+                payment_result = trigger_marzpay_collection(
+                    phone_number=phone,
+                    amount=1000,
+                    description=f"Registration Payment Test - {org.name}"
+                )
+
+            res_data = {
                 'user': CustomUserSerializer(user).data,
                 'organization': OrganizationSerializer(org).data,
                 'tokens': {
                     'refresh': str(refresh),
                     'access': str(refresh.access_token),
                 }
-            }, status=status.HTTP_201_CREATED)
+            }
+            if payment_result:
+                res_data['payment_result'] = payment_result
+
+            return Response(res_data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
