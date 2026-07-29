@@ -13,7 +13,6 @@ urlpatterns = [
     path("billing/", include("subscriptions.urls")),
     # pyrefly: ignore [missing-import]
     path("api/", include("spaces.urls")),
-    path("spaces/", include("spaces.urls")),
     path("", include("spaces.urls")),
 ]
 
