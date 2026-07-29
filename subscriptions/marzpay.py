@@ -1,6 +1,8 @@
 import uuid
 import logging
+import base64
 import requests
+# pyrefly: ignore [missing-import]
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
@@ -12,7 +14,12 @@ def trigger_marzpay_collection(phone_number: str, amount: int = 1000, descriptio
     Endpoint: https://wallet.wearemarz.com/api/v1/collect-money
     """
     collect_url = getattr(settings, 'MARZPAY_COLLECT_URL', 'https://wallet.wearemarz.com/api/v1/collect-money')
-    auth_header = getattr(settings, 'MARZPAY_BASE64_AUTHORIZATION_HEADER', 'bWFyel9YU2R5MnVjTGlKeGROa3Z4OjZpT3Nkb3FUdUo5eXpDS2NodUk2Y1RBZEI4R3dzUlZw')
+    
+    api_key = getattr(settings, 'MARZPAY_API_KEY', 'marz_XSdy2ucLiJxdNkvx')
+    api_secret = getattr(settings, 'MARZPAY_API_SECRET', '6iOsdoqTuJ9yzCKchuI6cTAdB8GwsRVp')
+    
+    # Guarantee proper RFC 7617 base64 encoding
+    auth_header = base64.b64encode(f"{api_key}:{api_secret}".encode('utf-8')).decode('utf-8')
 
     if not reference:
         reference = str(uuid.uuid4())
@@ -50,9 +57,13 @@ def trigger_marzpay_collection(phone_number: str, amount: int = 1000, descriptio
         except Exception:
             response_data = {'text': response.text}
 
+        is_success = response.status_code in [200, 201] or (
+            isinstance(response_data, dict) and response_data.get('status') in ['success', 'pending', True]
+        )
+
         return {
             'status_code': response.status_code,
-            'success': response.status_code in [200, 201],
+            'success': is_success,
             'reference': reference,
             'amount': amount,
             'phone_number': formatted_phone,
@@ -68,3 +79,4 @@ def trigger_marzpay_collection(phone_number: str, amount: int = 1000, descriptio
             'phone_number': formatted_phone,
             'error': str(e)
         }
+
