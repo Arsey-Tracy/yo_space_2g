@@ -4,23 +4,17 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 from rest_framework import status
 from account.models import CustomUser, Organization
-from subscriptions.models import Subscription, SMSBundle
-from spaces.models import Space, SpaceMember, Broadcast, Survey, SurveyQuestion
+# Subscription import removed
+from spaces.models import Space, SpaceMember
+from sms.models import Broadcast
+from survey.models import Survey, SurveyQuestion
 
 
 class YoSpacesBackendTestCase(TestCase):
     def setUp(self):
         self.client = APIClient()
         # Seed Subscriptions & SMS Bundle
-        Subscription.objects.create(
-            name='Standard', price=200000, max_spaces=1, max_members_per_space=100, monthly_sms_quota=1000
-        )
-        Subscription.objects.create(
-            name='Pro', price=350000, max_spaces=3, max_members_per_space=300, monthly_sms_quota=3000, allow_merge_spaces=True
-        )
-        self.bundle = SMSBundle.objects.create(
-            name='Starter Pack', sms_count=500, price=25000.00
-        )
+        # Subscription and SMS bundle seeding removed
 
         # Register Admin User
         self.register_url = reverse('auth-register')
@@ -52,9 +46,9 @@ class YoSpacesBackendTestCase(TestCase):
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         self.assertEqual(Space.objects.count(), 1)
 
-        # Standard plan allows max 1 space
+        # Unlimited spaces allowed; second space should be created successfully
         res2 = self.client.post(url, {'name': 'Farmers Group 2'})
-        self.assertEqual(res2.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res2.status_code, status.HTTP_201_CREATED)
 
     def test_member_addition_and_csv_import(self):
         space = Space.objects.create(organization=self.org, name='Youth Group', host_phone='+256700000001')
@@ -89,22 +83,7 @@ class YoSpacesBackendTestCase(TestCase):
         self.org.refresh_from_db()
         self.assertEqual(self.org.sms_balance, 999)
 
-    def test_sms_bundle_purchase_topup(self):
-        purchase_url = reverse('sms-purchase')
-        res = self.client.post(purchase_url, {
-            'bundle_id': self.bundle.id,
-            'payment_method': 'Mobile Money',
-            'payment_reference': 'MM-123456'
-        })
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-        self.org.refresh_from_db()
-        self.assertEqual(self.org.sms_balance, 1500)  # 1000 initial + 500 top-up
-
-        balance_url = reverse('sms-balance')
-        res_bal = self.client.get(balance_url)
-        self.assertEqual(res_bal.status_code, status.HTTP_200_OK)
-        self.assertEqual(res_bal.data['sms_balance'], 1500)
-        self.assertEqual(res_bal.data['total_credits_purchased'], 500)
+        # Test for SMS bundle purchase removed as subscription model is deprecated
 
     def test_ussd_role_routing(self):
         ussd_url = reverse('ussd-callback')

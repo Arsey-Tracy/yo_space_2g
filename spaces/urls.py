@@ -1,15 +1,13 @@
-# pyrefly: ignore [missing-import]
 from django.urls import path, include
-# pyrefly: ignore [missing-import]
 from rest_framework.routers import DefaultRouter
-# pyrefly: ignore [missing-import]
 from .views import (
     DashboardStatsView, SpaceViewSet, MergeSpacesView,
     SpaceMemberViewSet, ImportMembersCSVView, ExportMembersCSVView,
-    BroadcastViewSet, SurveyViewSet,
-    ussd_callback, voice_callback, conference_control,
-    active_listeners, sms_delivery_report
+    ussd_callback
 )
+from sms.views import BroadcastViewSet, sms_delivery_report
+from survey.views import SurveyViewSet
+from voice.views import voice_callback, conference_control, active_listeners
 
 router = DefaultRouter()
 router.register(r'spaces', SpaceViewSet, basename='space')

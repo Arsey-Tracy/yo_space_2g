@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 from pathlib import Path
 import os
+# pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -33,8 +34,13 @@ ALLOWED_HOSTS = ["*"]
 
 # Africa's Talking Configuration
 AT_VOICE_NUMBER = os.getenv("AFRICASTALKING_VOICE_NUMBER", "+256323200925")
-AFRICASTALKING_LIVE_USERNAME = os.getenv("AFRICASTALKING_USERNAME", "yo_space")
-AFRICASTALKING_LIVE_API_KEY = os.getenv("AFRICASTALKING_API_KEY", "atsk_d0ad900cfea42fa2fca26ee5bc47964c8e1e092d5565e4c0ce5217a82c5267ed079ab373")
+AFRICASTALKING_USE_SANDBOX = os.getenv("AFRICASTALKING_USE_SANDBOX", "False").lower() == "true"
+if AFRICASTALKING_USE_SANDBOX:
+    AFRICASTALKING_LIVE_USERNAME = os.getenv("AFRICASTALKING_SANDBOX_USERNAME", "sandbox")
+    AFRICASTALKING_LIVE_API_KEY = os.getenv("AFRICASTALKING_SANDBOX_API_KEY", "")
+else:
+    AFRICASTALKING_LIVE_USERNAME = os.getenv("AFRICASTALKING_USERNAME", "yo_space")
+    AFRICASTALKING_LIVE_API_KEY = os.getenv("AFRICASTALKING_API_KEY", "atsk_d0ad900cfea42fa2fca26ee5bc47964c8e1e092d5565e4c0ce5217a82c5267ed079ab373")
 
 AT_CONFERENCE_URL = "https://voice.africastalking.com/conference"
 AT_CALL_URL = "https://voice.africastalking.com/call"
@@ -61,10 +67,11 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt",
     "account",
-    "subscriptions",
-    "spaces",
     "notifications",
     "poll", 
+    "wallet",
+    "spaces",
+    "sms", "voice",
     "survey",
 ]
 

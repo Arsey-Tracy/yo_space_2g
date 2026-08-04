@@ -2,23 +2,17 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import logging
 import re
-import urllib.error
-import urllib.parse
-import urllib.request
-from typing import Optional
 from datetime import datetime
 
-import xml.sax.saxutils as sx
 from django.conf import settings
 from django.db import transaction
-from django.http import HttpResponse, JsonResponse
+from django.http import HttpResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
-from rest_framework import status, permissions, viewsets
+from rest_framework import status, permissions, viewsets, serializers
 from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -26,43 +20,23 @@ from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser
 
 from account.models import Organization, CustomUser, Member
-from subscriptions.models import Subscription, SMSUsageLog
-from .models import (
-    Space, SpaceMember, ActiveSpaceParticipant,
-    Broadcast, Survey, SurveyQuestion, SurveyResponse
-)
-from .serializers import (
-    SpaceSerializer, SpaceMemberSerializer, BroadcastSerializer,
-    SurveySerializer, SurveyQuestionSerializer, SurveyResponseSerializer,
-    MergeSpacesSerializer
-)
+# Subscription model removed; unlimited plan defaults
+from sms.models import Broadcast
+from sms.serializers import BroadcastSerializer
+from sms.views import send_bulk_sms
+from voice.views import trigger_outbound_space_calls
+from survey.models import Survey
 
-try:
-    import africastalking  # type: ignore
-except Exception:  # pragma: no cover
-    africastalking = None
+from .models import Space, SpaceMember
+from .serializers import (
+    SpaceSerializer, SpaceMemberSerializer, MergeSpacesSerializer
+)
 
 logger = logging.getLogger("yospaces")
-
-AT_VOICE_NUMBER = getattr(settings, "AT_VOICE_NUMBER", "+256323200925")
-AFRICASTALKING_LIVE_USERNAME = getattr(settings, "AFRICASTALKING_LIVE_USERNAME", "yo_space")
-AFRICASTALKING_LIVE_API_KEY = getattr(settings, "AFRICASTALKING_LIVE_API_KEY", "")
-AT_CONFERENCE_URL = "https://voice.africastalking.com/conference"
-AT_CALL_URL = "https://voice.africastalking.com/call"
-
-if africastalking and AFRICASTALKING_LIVE_API_KEY:
-    try:
-        africastalking.initialize(AFRICASTALKING_LIVE_USERNAME, AFRICASTALKING_LIVE_API_KEY)
-    except Exception as exc:
-        logger.warning("Africa's Talking SDK initialization failed: %s", exc)
 
 
 def _plain(text: str) -> HttpResponse:
     return HttpResponse(text, content_type="text/plain")
-
-
-def _xml(text: str) -> HttpResponse:
-    return HttpResponse(text, content_type="text/xml")
 
 
 def _normalize_phone(phone: str) -> str:
@@ -76,54 +50,8 @@ def _normalize_phone(phone: str) -> str:
     return "+" + phone
 
 
-def send_bulk_sms(phone_numbers: list[str], message: str, sender_id: Optional[str] = None) -> dict:
-    """
-    Sends bulk SMS via Africa's Talking API and returns result dictionary.
-    """
-    normalized_recipients = list(set(_normalize_phone(p) for p in phone_numbers if p))
-    if not normalized_recipients:
-        return {"success": False, "error": "No valid recipient phone numbers provided.", "count": 0}
-
-    if africastalking and AFRICASTALKING_LIVE_API_KEY:
-        try:
-            sms_client = getattr(africastalking, "SMS", None)
-            if sms_client and hasattr(sms_client, "send"):
-                kwargs = {"message": message, "recipients": normalized_recipients}
-                if sender_id:
-                    kwargs["sender_id"] = sender_id
-                response = sms_client.send(**kwargs)
-                logger.info("Africa's Talking SMS response: %s", response)
-                return {"success": True, "response": response, "count": len(normalized_recipients)}
-        except Exception as exc:
-            logger.error("Africa's Talking SDK SMS error: %s", exc)
-
-    # REST Fallback
-    try:
-        url = "https://api.africastalking.com/version1/messaging"
-        payload_data = {
-            "username": AFRICASTALKING_LIVE_USERNAME,
-            "to": ",".join(normalized_recipients),
-            "message": message,
-        }
-        if sender_id:
-            payload_data["from"] = sender_id
-
-        payload = urllib.parse.urlencode(payload_data).encode("utf-8")
-        req = urllib.request.Request(url, data=payload, method="POST")
-        req.add_header("Accept", "application/json")
-        req.add_header("Content-Type", "application/x-www-form-urlencoded")
-        req.add_header("apiKey", AFRICASTALKING_LIVE_API_KEY)
-
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = resp.read().decode("utf-8")
-            return {"success": True, "response": body, "count": len(normalized_recipients)}
-    except Exception as exc:
-        logger.error("REST SMS Fallback failed: %s", exc)
-        return {"success": False, "error": str(exc), "count": len(normalized_recipients)}
-
-
 # ==========================================
-# REST API VIEWS FOR DASHBOARD & MANAGEMENT
+# REST API VIEWS FOR DASHBOARD & SPACES
 # ==========================================
 
 class DashboardStatsView(APIView):
@@ -139,7 +67,7 @@ class DashboardStatsView(APIView):
         if not org:
             return Response({'detail': 'Organization not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        plan = Subscription.objects.filter(name=org.subscription_tier).first()
+        plan = None  # No subscription plan
         spaces = Space.objects.filter(organization=org)
         total_spaces = spaces.count()
         total_members = SpaceMember.objects.filter(space__in=spaces).values('phone_number').distinct().count()
@@ -181,13 +109,10 @@ class SpaceViewSet(viewsets.ModelViewSet):
         if not org:
             raise serializers.ValidationError("Only organization owners can create spaces.")
 
-        plan = Subscription.objects.filter(name=org.subscription_tier).first()
-        max_allowed = plan.max_spaces if plan else 1
+        # No subscription limits; allow unlimited spaces
+        max_allowed = None
 
-        if org.spaces.count() >= max_allowed:
-            raise ValidationError(
-                f"Subscription limit reached ({max_allowed} space max for {org.subscription_tier} plan). Upgrade tier to create more spaces."
-            )
+        # No space limit enforcement
 
         serializer.save(
             organization=org,
@@ -200,28 +125,12 @@ class SpaceViewSet(viewsets.ModelViewSet):
         space.is_active = True
         space.save(update_fields=['is_active'])
 
-        # Trigger best-effort outbound voice calls to members
-        members_phones = list(space.members.values_list('phone_number', flat=True))
-        if members_phones and AFRICASTALKING_LIVE_API_KEY:
-            try:
-                payload = urllib.parse.urlencode({
-                    "username": AFRICASTALKING_LIVE_USERNAME,
-                    "from": AT_VOICE_NUMBER,
-                    "to": "[" + ", ".join([_normalize_phone(p) for p in members_phones]) + "]",
-                    "clientRequestId": space.pin,
-                }).encode("utf-8")
-                req = urllib.request.Request(AT_CALL_URL, data=payload, method="POST")
-                req.add_header("Accept", "application/json")
-                req.add_header("Content-Type", "application/x-www-form-urlencoded")
-                req.add_header("apiKey", AFRICASTALKING_LIVE_API_KEY)
-                urllib.request.urlopen(req, timeout=10)
-            except Exception as exc:
-                logger.warning("Outbound call exception for space %s: %s", space.name, exc)
+        invited_count = trigger_outbound_space_calls(space)
 
         return Response({
             'message': f"Space '{space.name}' is now LIVE.",
             'pin': space.pin,
-            'invited_callers_count': len(members_phones)
+            'invited_callers_count': invited_count
         })
 
 
@@ -237,12 +146,7 @@ class MergeSpacesView(APIView):
         if not org:
             return Response({'detail': 'Organization not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        plan = Subscription.objects.filter(name=org.subscription_tier).first()
-        if not plan or not plan.allow_merge_spaces:
-            return Response(
-                {'detail': 'Merge spaces feature is available on Pro and Premium subscription tiers.'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        # Merge spaces allowed without subscription checks
 
         source_id = serializer.validated_data['source_space_id']
         target_id = serializer.validated_data['target_space_id']
@@ -254,7 +158,6 @@ class MergeSpacesView(APIView):
             return Response({'detail': 'One or both spaces were not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         with transaction.atomic():
-            # Move all members from source to target without duplicates
             for member in source_space.members.all():
                 if not SpaceMember.objects.filter(space=target_space, phone_number=member.phone_number).exists():
                     member.space = target_space
@@ -283,13 +186,7 @@ class SpaceMemberViewSet(viewsets.ModelViewSet):
         space_id = self.kwargs.get('space_pk')
         space = Space.objects.get(id=space_id)
         org = space.organization
-        plan = Subscription.objects.filter(name=org.subscription_tier).first() if org else None
-        max_allowed = plan.max_members_per_space if plan else 100
-
-        if space.members.count() >= max_allowed:
-            raise ValidationError(
-                f"Member limit reached ({max_allowed} members max for {org.subscription_tier} plan)."
-            )
+        # No member limit enforcement; unlimited members
 
         serializer.save(space=space)
 
@@ -307,7 +204,7 @@ class ImportMembersCSVView(APIView):
         if not file_obj:
             return Response({'detail': 'No CSV file provided.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        decoded_file = file_obj.read().decode('utf-8')
+        decoded_file = file_obj.read().decode('utf-8', errors='ignore')
         io_string = io.StringIO(decoded_file)
         reader = csv.DictReader(io_string)
 
@@ -315,11 +212,11 @@ class ImportMembersCSVView(APIView):
         skipped_count = 0
 
         for row in reader:
-            phone = row.get('phone') or row.get('phone_number') or row.get('Phone')
+            phone = row.get('phone') or row.get('phone_number') or row.get('Phone') or row.get('Mobile') or row.get('mobile')
             if not phone:
                 continue
             phone = _normalize_phone(phone)
-            name = row.get('name') or row.get('Name') or ''
+            name = row.get('name') or row.get('Name') or row.get('full_name') or ''
             role = row.get('role') or row.get('Role') or 'member'
 
             member, created = SpaceMember.objects.get_or_create(
@@ -358,118 +255,8 @@ class ExportMembersCSVView(APIView):
         return response
 
 
-class BroadcastViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.IsAuthenticated]
-    serializer_class = BroadcastSerializer
-
-    def get_queryset(self):
-        org = Organization.objects.filter(owner=self.request.user).first()
-        if org:
-            return Broadcast.objects.filter(space__organization=org)
-        return Broadcast.objects.none()
-
-    def perform_create(self, serializer):
-        space = serializer.validated_data['space']
-        org = space.organization
-        message = serializer.validated_data['message']
-        broadcast_status = serializer.validated_data.get('status', 'draft')
-
-        recipients = list(space.members.values_list('phone_number', flat=True))
-        recipients_count = len(recipients)
-
-        if broadcast_status == 'sent':
-            if org.sms_balance < recipients_count:
-                raise ValidationError(
-                    f"Insufficient SMS balance ({org.sms_balance} available, {recipients_count} required)."
-                )
-
-            # Send SMS via Africa's Talking
-            res = send_bulk_sms(recipients, message, sender_id=org.sender_id)
-
-            # Deduct balance & create log
-            org.sms_balance -= recipients_count
-            org.save()
-
-            SMSUsageLog.objects.create(
-                organization=org,
-                recipient_count=recipients_count,
-                sms_cost_credits=recipients_count,
-                description=f"Broadcast to Space '{space.name}'"
-            )
-
-            serializer.save(
-                created_by=self.request.user,
-                recipients_count=recipients_count,
-                cost_credits=recipients_count,
-                sent_at=timezone.now(),
-                status='sent'
-            )
-        else:
-            serializer.save(
-                created_by=self.request.user,
-                recipients_count=recipients_count,
-                cost_credits=recipients_count,
-                status=broadcast_status
-            )
-
-
-class SurveyViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.IsAuthenticated]
-    serializer_class = SurveySerializer
-
-    def get_queryset(self):
-        org = Organization.objects.filter(owner=self.request.user).first()
-        if org:
-            return Survey.objects.filter(space__organization=org)
-        return Survey.objects.none()
-
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
-
-    @action(detail=True, methods=['post'], url_path='add-question')
-    def add_question(self, request, pk=None):
-        survey = self.get_object()
-        q_serializer = SurveyQuestionSerializer(data=request.data)
-        if q_serializer.is_valid():
-            q_serializer.save(survey=survey)
-            return Response(q_serializer.data, status=status.HTTP_201_CREATED)
-        return Response(q_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    @action(detail=True, methods=['get'], url_path='analytics')
-    def analytics(self, request, pk=None):
-        survey = self.get_object()
-        questions = survey.questions.all()
-        data = []
-
-        for q in questions:
-            responses = q.responses.all()
-            total_r = responses.count()
-            counts = {}
-            for r in responses:
-                val = r.answer_value or r.answer_text
-                counts[val] = counts.get(val, 0) + 1
-
-            percentages = {k: round((v / total_r) * 100, 2) for k, v in counts.items()} if total_r > 0 else {}
-
-            data.append({
-                'question_id': q.id,
-                'question_text': q.question_text,
-                'question_type': q.question_type,
-                'total_responses': total_r,
-                'breakdown': counts,
-                'percentages': percentages
-            })
-
-        return Response({
-            'survey_id': survey.id,
-            'title': survey.title,
-            'space': survey.space.name,
-            'questions_analytics': data
-        })
-
-
 # ==========================================
-# AFRICA'S TALKING TELEPHONY & USSD CALLBACKS
+# AFRICA'S TALKING USSD CALLBACK
 # ==========================================
 
 _ussd_sessions = {}
@@ -518,7 +305,6 @@ def ussd_callback(request):
     current = _current_input(text)
     session = _get_session(phone_number)
 
-    # Check if caller is an Organization Owner/Admin
     is_org_host = CustomUser.objects.filter(phone=phone_number).exists() or \
                   Organization.objects.filter(owner__phone=phone_number).exists() or \
                   Space.objects.filter(host_phone=phone_number).exists()
@@ -578,8 +364,9 @@ def ussd_callback(request):
             space = Space.objects.filter(host_phone=phone_number).first()
             if not space:
                 return _plain("END No space found to send broadcast.")
+            org = space.organization
             recipients = list(space.members.values_list('phone_number', flat=True))
-            send_bulk_sms(recipients, msg)
+            send_bulk_sms(recipients, msg, sender_id=org.sender_id if org else None, org_name=org.name if org else None)
             _clear_session(phone_number)
             return _plain(f"END Broadcast sent to {len(recipients)} members of {space.name}.")
 
@@ -629,104 +416,3 @@ def ussd_callback(request):
         return _plain("END Thank you for using Yo-Spaces.")
 
     return _plain("END Invalid selection. Goodbye.")
-
-
-@csrf_exempt
-def voice_callback(request):
-    if request.method != "POST":
-        return _xml('<?xml version="1.0" encoding="UTF-8"?><Response><Say>Invalid request method.</Say></Response>')
-
-    session_id = request.POST.get("sessionId", "")
-    is_active = request.POST.get("isActive", "1")
-    caller_number = request.POST.get("callerNumber") or request.POST.get("phoneNumber") or ""
-    dtmf_digits = (request.POST.get("dtmfDigits", "") or request.POST.get("digits", "")).strip()
-
-    if is_active == "0":
-        ActiveSpaceParticipant.objects.filter(call_session_id=session_id).delete()
-        return _xml('<?xml version="1.0" encoding="UTF-8"?><Response></Response>')
-
-    if not dtmf_digits:
-        callback_url = request.build_absolute_uri(request.path)
-        return _xml(
-            '<?xml version="1.0" encoding="UTF-8"?><Response>'
-            '<GetDigits timeout="20" finishOnKey="#" numDigits="4" '
-            f'callbackUrl="{sx.escape(callback_url)}">'
-            '<Say>Welcome to Yo-Spaces. Enter your 4-digit PIN then press hash.</Say>'
-            '</GetDigits>'
-            '</Response>'
-        )
-
-    space = Space.objects.filter(pin=dtmf_digits).first()
-    if not space:
-        return _xml('<?xml version="1.0" encoding="UTF-8"?><Response><Say>Invalid Space PIN. Goodbye.</Say></Response>')
-
-    caller = _normalize_phone(caller_number)
-    ActiveSpaceParticipant.objects.update_or_create(
-        space=space,
-        phone_number=caller,
-        defaults={"call_session_id": session_id}
-    )
-
-    is_host = caller == _normalize_phone(space.host_phone)
-    attrs = f'maxParticipants="20" record="false" beep="onEnter" startOnEnter="{"true" if is_host else "false"}"'
-
-    return _xml(
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<Response>'
-        f'<Say>Connecting you to {sx.escape(space.name)}</Say>'
-        f'<Conference {attrs}>{sx.escape(space.pin)}</Conference>'
-        '</Response>'
-    )
-
-
-@csrf_exempt
-def conference_control(request):
-    if request.method != "POST":
-        return JsonResponse({"status": False, "errorMessage": "POST only"}, status=405)
-
-    try:
-        payload = json.loads(request.body.decode("utf-8") or "{}")
-    except Exception:
-        payload = request.POST.dict()
-
-    payload.setdefault("username", AFRICASTALKING_LIVE_USERNAME)
-    payload.setdefault("phoneNumber", AT_VOICE_NUMBER)
-
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(AT_CONFERENCE_URL, data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Accept", "application/json")
-    req.add_header("apiKey", AFRICASTALKING_LIVE_API_KEY)
-
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return HttpResponse(resp.read().decode("utf-8"), content_type="application/json", status=resp.status)
-    except Exception as exc:
-        return JsonResponse({"status": False, "errorMessage": str(exc)}, status=500)
-
-
-@csrf_exempt
-def active_listeners(request):
-    data = [
-        {
-            "space": p.space.name,
-            "phone": p.masked_phone(),
-            "joined_at": p.joined_at.isoformat(),
-        }
-        for p in ActiveSpaceParticipant.objects.select_related("space").filter(space__is_active=True)
-    ]
-    return JsonResponse({"active": data})
-
-
-@csrf_exempt
-def sms_delivery_report(request):
-    """
-    Africa's Talking SMS Delivery Report Webhook
-    """
-    if request.method == "POST":
-        msg_id = request.POST.get("id")
-        status_text = request.POST.get("status")
-        phoneNumber = request.POST.get("phoneNumber")
-        logger.info("SMS DLR Received - ID: %s, Phone: %s, Status: %s", msg_id, phoneNumber, status_text)
-        return HttpResponse("OK", content_type="text/plain")
-    return HttpResponse("DLR Webhook Ready", content_type="text/plain")
