@@ -136,6 +136,10 @@ class PurchaseSMSView(APIView):
                 wallet.balance_credits += bundle.sms_count
                 wallet.save(update_fields=['balance_credits'])
 
+                if hasattr(org, 'sms_balance'):
+                    org.sms_balance = wallet.balance_credits
+                    org.save(update_fields=['sms_balance'])
+
                 WalletTransaction.objects.create(
                     wallet=wallet,
                     transaction_type='topup',

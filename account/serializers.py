@@ -12,18 +12,25 @@ class CustomUserSerializer(serializers.ModelModelSerializer if hasattr(serialize
 class OrganizationSerializer(serializers.ModelSerializer):
     owner = CustomUserSerializer(read_only=True)
     spaces_count = serializers.SerializerMethodField()
+    sms_balance = serializers.SerializerMethodField()
 
     class Meta:
         model = Organization
         fields = [
-            'id', 'name', 'subscription_tier', 'sender_id', 
+            'id', 'name', 'sender_id',
             'default_language', 'sms_balance', 'owner', 'spaces_count',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'subscription_tier', 'sms_balance', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'sms_balance', 'created_at', 'updated_at']
 
     def get_spaces_count(self, obj):
         return obj.spaces.count()
+
+    def get_sms_balance(self, obj):
+        wallet = getattr(obj, 'wallet', None)
+        if wallet is not None:
+            return wallet.balance_credits
+        return getattr(obj, 'sms_balance', 0)
 
 
 class RegisterSerializer(serializers.Serializer):
@@ -45,10 +52,19 @@ class RegisterSerializer(serializers.Serializer):
         org = Organization.objects.create(
             owner=user,
             name=validated_data['organization_name'],
-            subscription_tier='Standard',
             default_language=validated_data.get('default_language', 'en'),
-            sms_balance=1000
         )
+
+        try:
+            from wallet.models import Wallet
+            Wallet.objects.create(
+                organization=org,
+                balance_credits=1000,
+                cash_balance_ugx=0,
+            )
+        except Exception:
+            pass
+
         Member.objects.create(
             user=user,
             organization=org,

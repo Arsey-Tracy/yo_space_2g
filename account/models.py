@@ -21,24 +21,20 @@ class CustomUser(AbstractUser):
 
 
 class Organization(models.Model):
-    TIER_CHOICES = [
-        ('Standard', 'Standard'),
-        ('Pro', 'Pro'),
-        ('Premium', 'Premium'),
-        ('Enterprise', 'Enterprise'),
-    ]
-
     owner = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='owned_organizations', null=True, blank=True)
     name = models.CharField(max_length=255)
-    subscription_tier = models.CharField(max_length=50, choices=TIER_CHOICES, default='Standard')
     sender_id = models.CharField(max_length=11, blank=True, null=True, help_text="Custom SMS Sender ID")
     default_language = models.CharField(max_length=20, default='en')
-    sms_balance = models.PositiveIntegerField(default=1000, help_text="Remaining SMS credit balance")
+    sms_balance = models.PositiveIntegerField(default=0, help_text="Remaining SMS credit balance")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    @property
+    def subscription_tier(self):
+        return 'Pay-As-You-Go'
+
     def __str__(self):
-        return f"{self.name} ({self.subscription_tier})"
+        return self.name
 
 
 class Member(models.Model):
