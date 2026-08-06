@@ -8,6 +8,7 @@ from account.models import CustomUser, Organization
 from spaces.models import Space, SpaceMember
 from sms.models import Broadcast
 from survey.models import Survey, SurveyQuestion
+from wallet.models import Wallet
 
 
 class YoSpacesBackendTestCase(TestCase):
@@ -39,6 +40,11 @@ class YoSpacesBackendTestCase(TestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data['organization'], 'Test NGO')
         self.assertEqual(res.data['total_spaces'], 0)
+
+    def test_new_organization_starts_with_zero_balance(self):
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.sms_balance, 0)
+        self.assertFalse(Wallet.objects.filter(organization=self.org).exists())
 
     def test_space_creation_and_limits(self):
         url = reverse('space-list')
@@ -79,9 +85,10 @@ class YoSpacesBackendTestCase(TestCase):
             'message': 'Vaccination drive tomorrow at 9 AM.',
             'status': 'sent'
         })
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Insufficient SMS balance', str(res.data))
         self.org.refresh_from_db()
-        self.assertEqual(self.org.sms_balance, 999)
+        self.assertEqual(self.org.sms_balance, 0)
 
         # Test for SMS bundle purchase removed as subscription model is deprecated
 

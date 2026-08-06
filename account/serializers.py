@@ -55,16 +55,6 @@ class RegisterSerializer(serializers.Serializer):
             default_language=validated_data.get('default_language', 'en'),
         )
 
-        try:
-            from wallet.models import Wallet
-            Wallet.objects.create(
-                organization=org,
-                balance_credits=1000,
-                cash_balance_ugx=0,
-            )
-        except Exception:
-            pass
-
         Member.objects.create(
             user=user,
             organization=org,
