@@ -1,10 +1,9 @@
-# pyrefly: ignore [missing-import]
+from django.core.validators import MinValueValidator
 from django.db import models
-# pyrefly: ignore [missing-import]
 from django.conf import settings
-# from django.contrib.auth import get_user_model
 
-# User = get_user_model()
+from account.models import Organization
+
 User = settings.AUTH_USER_MODEL
 
 class Wallet(models.Model):
@@ -73,3 +72,52 @@ class TelecomNetwork(models.Model):
     def __str__(self):
         return f"{self.name} ({self.code}) - Base: {self.provider_cost_ugx} UGX, Selling: {self.selling_price_ugx} UGX"
 
+class SMSBundle(models.Model):
+    """
+    Pre-defined SMS credit bundles available for purchase.
+    Organizations buy these when their initial tier credits run low.
+    """
+    name = models.CharField(max_length=100, help_text="Bundle display name e.g. 'Starter Pack'")
+    sms_count = models.PositiveIntegerField(help_text="Number of SMS credits in this bundle")
+    price = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)], help_text="Price in UGX")
+    price_per_sms = models.DecimalField(max_digits=8, decimal_places=2, default=0, help_text="Calculated cost per single SMS")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['price']
+
+    def save(self, *args, **kwargs):
+        if self.sms_count > 0:
+            self.price_per_sms = self.price / self.sms_count
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name} - {self.sms_count} SMS @ UGX {self.price:,.0f}"
+
+
+class SMSPurchase(models.Model):
+    """
+    Tracks each SMS credit top-up purchase made by an organization.
+    """
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+    ]
+
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name='sms_purchases')
+    bundle = models.ForeignKey(SMSBundle, on_delete=models.SET_NULL, null=True, blank=True, related_name='purchases')
+    sms_count = models.PositiveIntegerField(help_text="Number of SMS credits purchased")
+    amount_paid = models.DecimalField(max_digits=12, decimal_places=2)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    payment_method = models.CharField(max_length=50, blank=True, help_text="e.g. Mobile Money, Bank Transfer")
+    payment_reference = models.CharField(max_length=100, blank=True, help_text="External transaction ID")
+    purchased_by = models.ForeignKey('account.CustomUser', on_delete=models.SET_NULL, null=True, blank=True)
+    purchased_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-purchased_at']
+
+    def __str__(self):
+        return f"{self.organization.name} bought {self.sms_count} SMS ({self.status})"

@@ -67,6 +67,7 @@ class DashboardStatsView(APIView):
         if not org:
             return Response({'detail': 'Organization not found.'}, status=status.HTTP_404_NOT_FOUND)
 
+        # path("api/billing/", include("billing.urls")),
         plan = None  # No subscription plan
         spaces = Space.objects.filter(organization=org)
         total_spaces = spaces.count()
@@ -79,14 +80,17 @@ class DashboardStatsView(APIView):
             space__in=spaces, status='sent', sent_at__gte=start_of_month
         ).count()
 
+        wallet = getattr(org, 'wallet', None)
+        if not wallet:
+            from wallet.models import Wallet
+            wallet = Wallet.objects.create(organization=org)
+
         return Response({
             'organization': org.name,
-            'subscription_tier': org.subscription_tier,
-            'sms_balance': org.sms_balance,
+            'sms_balance': wallet.balance_credits,
+            'cash_balance_ugx': wallet.cash_balance_ugx,
             'total_spaces': total_spaces,
-            'max_spaces_limit': plan.max_spaces if plan else 1,
             'total_members': total_members,
-            'max_members_per_space': plan.max_members_per_space if plan else 100,
             'broadcasts_sent_this_month': broadcasts_this_month,
             'recent_broadcasts': BroadcastSerializer(
                 Broadcast.objects.filter(space__in=spaces)[:5], many=True

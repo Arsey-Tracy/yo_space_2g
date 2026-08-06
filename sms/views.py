@@ -13,9 +13,9 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from account.models import Organization
-from .models import SMSUsageLog
-from .models import Broadcast
+from .models import SMSUsageLog, Broadcast
 from .serializers import BroadcastSerializer
+from wallet.models import Wallet, SmsUsageRecord, WalletTransaction
 
 try:
     import africastalking  # type: ignore
@@ -121,17 +121,43 @@ class BroadcastViewSet(viewsets.ModelViewSet):
         recipients_count = len(recipients)
 
         if broadcast_status == 'sent':
-            if org.sms_balance < recipients_count:
+            wallet = getattr(org, 'wallet', None)
+            if not wallet:
+                wallet = Wallet.objects.create(organization=org)
+
+            if wallet.balance_credits < recipients_count:
                 raise ValidationError(
-                    f"Insufficient SMS balance ({org.sms_balance} available, {recipients_count} required)."
+                    f"Insufficient SMS balance ({wallet.balance_credits} available, {recipients_count} required)."
                 )
 
             # Send SMS via Africa's Talking
             res = send_bulk_sms(recipients, message, sender_id=org.sender_id, org_name=org.name)
 
-            # Deduct balance & create log
-            org.sms_balance -= recipients_count
-            org.save()
+            # Only deduct credits when the provider accepted the request
+            if not res.get('success'):
+                raise ValidationError(f"SMS sending failed: {res.get('error', 'Unknown error')}")
+
+            wallet.balance_credits -= recipients_count
+            wallet.save(update_fields=['balance_credits'])
+
+            WalletTransaction.objects.create(
+                wallet=wallet,
+                transaction_type='deduction',
+                amount_paid_ugx=0,
+                credits_added=-recipients_count,
+                payment_method='SMS Send',
+                payment_reference=res.get('response', {}).get('SMSMessageData', {}).get('message', '') if isinstance(res.get('response'), dict) else '',
+                initiated_by=self.request.user,
+                notes=f"Broadcast to Space '{space.name}'",
+            )
+
+            SmsUsageRecord.objects.create(
+                wallet=wallet,
+                broadcast_id=f"broadcast-{space.id}-{timezone.now().strftime('%Y%m%d%H%M%S')}",
+                recipients_count=recipients_count,
+                credits_deducted=recipients_count,
+                status='sent',
+            )
 
             SMSUsageLog.objects.create(
                 organization=org,

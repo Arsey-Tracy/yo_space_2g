@@ -9,8 +9,8 @@ urlpatterns = [
     path("auth/", include("account.urls")),
     
     # Subscriptions & Billing
-    # path("api/billing/", include("subscriptions.urls")),
-    # path("billing/", include("subscriptions.urls")),
+    path("api/billing/", include("wallet.urls")),
+    path("billing/", include("wallet.urls")),
     
     # Spaces App
     path("api/", include("spaces.urls")),
