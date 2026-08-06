@@ -25,8 +25,12 @@ urlpatterns = [
     path('current/', WalletBalanceView.as_view(), name='wallet-current'),
     path('current', WalletBalanceView.as_view()),
     path('wallet/balance/', WalletBalanceView.as_view(), name='wallet-balance'),
+    path('wallet/balance', WalletBalanceView.as_view()),
     path('sms-bundles/', SMSBundleListView.as_view(), name='sms-bundle-list'),
+    path('sms-bundles', SMSBundleListView.as_view()),
     path('sms-bundles/purchase/', PurchaseSMSView.as_view(), name='sms-bundle-purchase'),
+    path('sms-bundles/purchase', PurchaseSMSView.as_view()),
     path('sms-purchases/', SMSPurchaseHistoryView.as_view(), name='sms-purchase-history'),
+    path('sms-purchases', SMSPurchaseHistoryView.as_view()),
 ]
 

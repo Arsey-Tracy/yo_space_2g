@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.db.utils import OperationalError
 from rest_framework import viewsets, permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -65,92 +66,116 @@ class WalletBalanceView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        org = get_organization_for_user(request.user)
-        if not org:
-            return Response({'detail': 'Organization not found.'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            org = get_organization_for_user(request.user)
+            if not org:
+                return Response({'detail': 'Organization not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        wallet = get_or_create_wallet(org)
-        return Response({
-            'organization': org.name,
-            'sms_balance': wallet.balance_credits,
-            'cash_balance_ugx': wallet.cash_balance_ugx,
-            'updated_at': wallet.updated_at,
-        })
+            wallet = get_or_create_wallet(org)
+            return Response({
+                'organization': org.name,
+                'sms_balance': wallet.balance_credits,
+                'cash_balance_ugx': wallet.cash_balance_ugx,
+                'updated_at': wallet.updated_at,
+            })
+        except OperationalError:
+            return Response(
+                {'detail': 'Billing database schema not ready. Please apply migrations and retry.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
 
 class SMSBundleListView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
-        bundles = SMSBundle.objects.filter(is_active=True).order_by('price')
-        serializer = SMSBundleSerializer(bundles, many=True)
-        return Response(serializer.data)
+        try:
+            bundles = SMSBundle.objects.filter(is_active=True).order_by('price')
+            serializer = SMSBundleSerializer(bundles, many=True)
+            return Response(serializer.data)
+        except OperationalError:
+            return Response(
+                {'detail': 'Billing database schema not ready. Please apply migrations and retry.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
 
 class PurchaseSMSView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        serializer = PurchaseSMSSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            serializer = PurchaseSMSSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        org = get_organization_for_user(request.user)
-        if not org:
-            return Response({'detail': 'Organization not found.'}, status=status.HTTP_404_NOT_FOUND)
+            org = get_organization_for_user(request.user)
+            if not org:
+                return Response({'detail': 'Organization not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        bundle = SMSBundle.objects.filter(id=serializer.validated_data['bundle_id'], is_active=True).first()
-        if not bundle:
-            return Response({'detail': 'SMS bundle not found or no longer available.'}, status=status.HTTP_404_NOT_FOUND)
+            bundle = SMSBundle.objects.filter(id=serializer.validated_data['bundle_id'], is_active=True).first()
+            if not bundle:
+                return Response({'detail': 'SMS bundle not found or no longer available.'}, status=status.HTTP_404_NOT_FOUND)
 
-        wallet = get_or_create_wallet(org)
-        payment_method = serializer.validated_data.get('payment_method', 'Mobile Money')
-        payment_reference = serializer.validated_data.get('payment_reference', '')
+            wallet = get_or_create_wallet(org)
+            payment_method = serializer.validated_data.get('payment_method', 'Mobile Money')
+            payment_reference = serializer.validated_data.get('payment_reference', '')
 
-        with transaction.atomic():
-            purchase = SMSPurchase.objects.create(
-                organization=org,
-                bundle=bundle,
-                sms_count=bundle.sms_count,
-                amount_paid=bundle.price,
-                status='completed',
-                payment_method=payment_method,
-                payment_reference=payment_reference,
-                purchased_by=request.user,
+            with transaction.atomic():
+                purchase = SMSPurchase.objects.create(
+                    organization=org,
+                    bundle=bundle,
+                    sms_count=bundle.sms_count,
+                    amount_paid=bundle.price,
+                    status='completed',
+                    payment_method=payment_method,
+                    payment_reference=payment_reference,
+                    purchased_by=request.user,
+                )
+
+                wallet.balance_credits += bundle.sms_count
+                wallet.save(update_fields=['balance_credits'])
+
+                WalletTransaction.objects.create(
+                    wallet=wallet,
+                    transaction_type='topup',
+                    amount_paid_ugx=int(bundle.price),
+                    credits_added=bundle.sms_count,
+                    payment_method=payment_method,
+                    payment_reference=payment_reference,
+                    initiated_by=request.user,
+                    notes=f'Purchased bundle {bundle.name}',
+                )
+
+            return Response({
+                'message': f'{bundle.sms_count} SMS credits purchased successfully!',
+                'bundle': SMSBundleSerializer(bundle).data,
+                'credits_added': bundle.sms_count,
+                'new_sms_balance': wallet.balance_credits,
+                'purchase': SMSPurchaseSerializer(purchase).data,
+            }, status=status.HTTP_201_CREATED)
+        except OperationalError:
+            return Response(
+                {'detail': 'Billing database schema not ready. Please apply migrations and retry.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-
-            wallet.balance_credits += bundle.sms_count
-            wallet.save(update_fields=['balance_credits'])
-
-            WalletTransaction.objects.create(
-                wallet=wallet,
-                transaction_type='topup',
-                amount_paid_ugx=int(bundle.price),
-                credits_added=bundle.sms_count,
-                payment_method=payment_method,
-                payment_reference=payment_reference,
-                initiated_by=request.user,
-                notes=f'Purchased bundle {bundle.name}',
-            )
-
-        return Response({
-            'message': f'{bundle.sms_count} SMS credits purchased successfully!',
-            'bundle': SMSBundleSerializer(bundle).data,
-            'credits_added': bundle.sms_count,
-            'new_sms_balance': wallet.balance_credits,
-            'purchase': SMSPurchaseSerializer(purchase).data,
-        }, status=status.HTTP_201_CREATED)
 
 
 class SMSPurchaseHistoryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        org = get_organization_for_user(request.user)
-        if not org:
-            return Response([], status=status.HTTP_200_OK)
-        purchases = SMSPurchase.objects.filter(organization=org).order_by('-purchased_at')
-        return Response(SMSPurchaseSerializer(purchases, many=True).data)
+        try:
+            org = get_organization_for_user(request.user)
+            if not org:
+                return Response([], status=status.HTTP_200_OK)
+            purchases = SMSPurchase.objects.filter(organization=org).order_by('-purchased_at')
+            return Response(SMSPurchaseSerializer(purchases, many=True).data)
+        except OperationalError:
+            return Response(
+                {'detail': 'Billing database schema not ready. Please apply migrations and retry.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
 
 class WalletTransactionViewSet(viewsets.ModelViewSet):
