@@ -50,6 +50,10 @@ MARZPAY_API_SECRET = "6iOsdoqTuJ9yzCKchuI6cTAdB8GwsRVp"
 MARZPAY_BASE64_AUTHORIZATION_HEADER = "bWFyel9YU2R5MnVjTGlKeGROa3Z4OjZpT3Nkb3FUdUo5eXpDS2NodUk2Y1RBZEI4R3dzUlZw" # ✨ Easiest option! This is your API Key and Secret already encoded.
 MARZPAY_COLLECT_URL = "https://wallet.wearemarz.com/api/v1/collect-money"
 
+IOTEC_PAY_BASE_URL = os.getenv("IOTEC_PAY_BASE_URL", "https://pay.iotec.io")
+IOTEC_PAY_ACCESS_TOKEN = os.getenv("IOTEC_PAY_ACCESS_TOKEN", "")
+IOTEC_PAY_TIMEOUT = int(os.getenv("IOTEC_PAY_TIMEOUT", "20"))
+
 
 frontend_url = "https://yo-space-web.vercel.app/"
 backend_url = "https://yo-space-2g.onrender.com/"

@@ -12,6 +12,8 @@ from .views import (
     SMSBundleListView,
     PurchaseSMSView,
     SMSPurchaseHistoryView,
+    PaymentCollectionStatusView,
+    PaymentCallbackView,
 )
 
 router = DefaultRouter()
@@ -32,5 +34,9 @@ urlpatterns = [
     path('sms-bundles/purchase', PurchaseSMSView.as_view()),
     path('sms-purchases/', SMSPurchaseHistoryView.as_view(), name='sms-purchase-history'),
     path('sms-purchases', SMSPurchaseHistoryView.as_view()),
+    path('payments/status/<str:external_id>/', PaymentCollectionStatusView.as_view(), name='payment-collection-status'),
+    path('payments/status/<str:external_id>', PaymentCollectionStatusView.as_view()),
+    path('payments/callback/', PaymentCallbackView.as_view(), name='payment-callback'),
+    path('payments/callback', PaymentCallbackView.as_view()),
 ]
 

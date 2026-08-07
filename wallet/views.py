@@ -1,4 +1,7 @@
+import requests
+from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 from django.db.utils import OperationalError
 from rest_framework import viewsets, permissions, status
 from rest_framework.views import APIView
@@ -6,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 
 from account.models import Organization, Member
+from .services import IotecPaymentService
 from .models import (
     Wallet,
     WalletTransaction,
@@ -42,6 +46,12 @@ def get_or_create_wallet(org):
         },
     )
     return wallet
+
+
+def compute_purchase_credits(amount_ugx):
+    if amount_ugx <= 0:
+        return 0
+    return max(1, int(amount_ugx / 40))
 
 
 class WalletViewSet(viewsets.ModelViewSet):
@@ -113,56 +123,172 @@ class PurchaseSMSView(APIView):
             if not org:
                 return Response({'detail': 'Organization not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-            bundle = SMSBundle.objects.filter(id=serializer.validated_data['bundle_id'], is_active=True).first()
-            if not bundle:
-                return Response({'detail': 'SMS bundle not found or no longer available.'}, status=status.HTTP_404_NOT_FOUND)
+            bundle_id = serializer.validated_data.get('bundle_id')
+            custom_amount = serializer.validated_data.get('custom_amount')
+            bundle = None
+            if bundle_id:
+                bundle = SMSBundle.objects.filter(id=bundle_id, is_active=True).first()
 
             wallet = get_or_create_wallet(org)
             payment_method = serializer.validated_data.get('payment_method', 'Mobile Money')
             payment_reference = serializer.validated_data.get('payment_reference', '')
+            phone_number = serializer.validated_data.get('phone_number', '') or payment_reference
+
+            if not bundle and not custom_amount:
+                return Response({'detail': 'Please select a bundle or enter a custom amount.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            amount_ugx = int(bundle.price if bundle else custom_amount)
+            credits_to_add = compute_purchase_credits(amount_ugx)
+            external_id = serializer.validated_data.get('external_id') or f"yo-space-{org.id}-{bundle_id or 'custom'}-{wallet.id}"
+            service = IotecPaymentService()
+            provider_result = service.initiate_collection(
+                wallet_id=str(wallet.id),
+                external_id=external_id,
+                amount=amount_ugx,
+                phone_number=phone_number,
+                description=f"Yo-Spaces top-up: {'custom amount' if not bundle else bundle.name}",
+            )
 
             with transaction.atomic():
                 purchase = SMSPurchase.objects.create(
                     organization=org,
                     bundle=bundle,
-                    sms_count=bundle.sms_count,
-                    amount_paid=bundle.price,
-                    status='completed',
+                    sms_count=credits_to_add,
+                    amount_paid=amount_ugx,
+                    status='pending',
                     payment_method=payment_method,
-                    payment_reference=payment_reference,
+                    payment_reference=external_id,
                     purchased_by=request.user,
                 )
-
-                wallet.balance_credits += bundle.sms_count
-                wallet.save(update_fields=['balance_credits'])
-
-                if hasattr(org, 'sms_balance'):
-                    org.sms_balance = wallet.balance_credits
-                    org.save(update_fields=['sms_balance'])
 
                 WalletTransaction.objects.create(
                     wallet=wallet,
                     transaction_type='topup',
-                    amount_paid_ugx=int(bundle.price),
-                    credits_added=bundle.sms_count,
+                    amount_paid_ugx=amount_ugx,
+                    credits_added=0,
                     payment_method=payment_method,
-                    payment_reference=payment_reference,
+                    payment_reference=external_id,
                     initiated_by=request.user,
-                    notes=f'Purchased bundle {bundle.name}',
+                    notes=f'Pending collection for {bundle.name if bundle else "custom top-up"}',
                 )
 
             return Response({
-                'message': f'{bundle.sms_count} SMS credits purchased successfully!',
-                'bundle': SMSBundleSerializer(bundle).data,
-                'credits_added': bundle.sms_count,
+                'message': 'Payment collection initiated. Credits will be applied after confirmation.',
+                'bundle': SMSBundleSerializer(bundle).data if bundle else None,
+                'credits_added': 0,
+                'credits_estimate': credits_to_add,
                 'new_sms_balance': wallet.balance_credits,
                 'purchase': SMSPurchaseSerializer(purchase).data,
+                'provider': provider_result,
             }, status=status.HTTP_201_CREATED)
+        except requests.RequestException as exc:
+            return Response({'detail': f'Payment provider request failed: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
         except OperationalError:
             return Response(
                 {'detail': 'Billing database schema not ready. Please apply migrations and retry.'},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
+
+
+class PaymentCollectionStatusView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, external_id):
+        try:
+            org = get_organization_for_user(request.user)
+            if not org:
+                return Response({'detail': 'Organization not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+            service = IotecPaymentService()
+            provider_result = service.get_collection_status(external_id=external_id)
+            status_value = str(provider_result.get('status', '')).lower()
+
+            if status_value == 'success':
+                wallet = get_or_create_wallet(org)
+                purchase = SMSPurchase.objects.filter(
+                    organization=org,
+                    payment_reference__in=[external_id, provider_result.get('requestId')],
+                ).order_by('-purchased_at').first()
+                if purchase and purchase.status != 'completed':
+                    with transaction.atomic():
+                        purchase.status = 'completed'
+                        purchase.save(update_fields=['status'])
+                        wallet.balance_credits += purchase.sms_count
+                        wallet.save(update_fields=['balance_credits'])
+
+                        if hasattr(org, 'sms_balance'):
+                            org.sms_balance = wallet.balance_credits
+                            org.save(update_fields=['sms_balance'])
+
+                        WalletTransaction.objects.create(
+                            wallet=wallet,
+                            transaction_type='topup',
+                            amount_paid_ugx=int(purchase.amount_paid),
+                            credits_added=purchase.sms_count,
+                            payment_method=purchase.payment_method or 'Mobile Money',
+                            payment_reference=external_id,
+                            initiated_by=request.user,
+                            notes='Credits applied after provider confirmation',
+                        )
+
+            return Response({
+                'organization': org.name,
+                'external_id': external_id,
+                'provider_status': provider_result.get('status'),
+                'wallet_balance': get_or_create_wallet(org).balance_credits,
+            })
+        except requests.RequestException as exc:
+            return Response({'detail': f'Payment provider request failed: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+        except OperationalError:
+            return Response(
+                {'detail': 'Billing database schema not ready. Please apply migrations and retry.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+
+class PaymentCallbackView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        external_id = request.data.get('externalId') or request.data.get('external_id')
+        status_value = str(request.data.get('status') or request.data.get('transactionStatus') or '').lower()
+
+        if not external_id:
+            return Response({'detail': 'Missing external id.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        org = Organization.objects.filter(id=external_id.split('-')[1] if len(external_id.split('-')) > 1 else None).first() if '-' in external_id else None
+        if not org:
+            org = None
+
+        if status_value == 'success' and org:
+            wallet = get_or_create_wallet(org)
+            purchase = SMSPurchase.objects.filter(
+                organization=org,
+                payment_reference__in=[external_id],
+            ).order_by('-purchased_at').first()
+            if purchase and purchase.status != 'completed':
+                with transaction.atomic():
+                    purchase.status = 'completed'
+                    purchase.save(update_fields=['status'])
+                    wallet.balance_credits += purchase.sms_count
+                    wallet.save(update_fields=['balance_credits'])
+
+                    if hasattr(org, 'sms_balance'):
+                        org.sms_balance = wallet.balance_credits
+                        org.save(update_fields=['sms_balance'])
+
+                    WalletTransaction.objects.create(
+                        wallet=wallet,
+                        transaction_type='topup',
+                        amount_paid_ugx=int(purchase.amount_paid),
+                        credits_added=purchase.sms_count,
+                        payment_method=purchase.payment_method or 'Mobile Money',
+                        payment_reference=external_id,
+                        initiated_by=None,
+                        notes='Credits applied from payment callback',
+                    )
+
+        return Response({'received': True, 'external_id': external_id, 'status': status_value})
 
 
 class SMSPurchaseHistoryView(APIView):
