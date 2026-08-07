@@ -14,7 +14,7 @@ from pathlib import Path
 import os
 # pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
-
+import dj_database_url
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -115,25 +115,32 @@ WSGI_APPLICATION = "yo_space_project.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-if DATABASE_URL:
-    try:
-        # pyrefly: ignore [missing-import]
-        import dj_database_url
-        DATABASES = {
-            "default": dj_database_url.config(
-                default=DATABASE_URL,
-                conn_max_age=600,
-                conn_health_checks=True,
-            )
+
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+    }
+}
+# USING SUPABASE DATABASE URL
+SUPABASE_DATABASE_URL = "postgresql://postgres:#voice4all%40256@db.mfhnvhvailjwvrvazcrp.supabase.co:5432/postgres"
+
+# DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRESQL_DB_URL")
+
+if SUPABASE_DATABASE_URL:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": "postgres",
+            "USER": "postgres",
+            "PASSWORD": "#voice4all@256",
+            "HOST": "db.mfhnvhvailjwvrvazcrp.supabase.co",
+            "PORT": "5432",
+            "OPTIONS": {
+                "sslmode": "require",
+            },
         }
-    except ImportError:
-        DATABASES = {
-            "default": {
-                "ENGINE": "django.db.backends.sqlite3",
-                "NAME": BASE_DIR / "db.sqlite3",
-            }
-        }
+    }
 else:
     DATABASES = {
         "default": {
@@ -141,6 +148,10 @@ else:
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
+
+# import dj_database_url
+# # DATABASES["default"] = dj_database_url.parse(DATABASE_URL, conn_max_age=600, ssl_require=True) 
+# DATABASES["default"] = dj_database_url.parse(POSTGRESQL_DB_URL) 
 
 AUTH_USER_MODEL = "account.CustomUser"
 # Password validation
