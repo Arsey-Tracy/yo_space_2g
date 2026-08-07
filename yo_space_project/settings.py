@@ -125,29 +125,29 @@ DATABASES = {
 # USING SUPABASE DATABASE URL
 SUPABASE_DATABASE_URL = "postgresql://postgres:#voice4all%40256@db.mfhnvhvailjwvrvazcrp.supabase.co:5432/postgres"
 
-# DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRESQL_DB_URL")
+# # DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRESQL_DB_URL")
 
-if SUPABASE_DATABASE_URL:
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": "postgres",
-            "USER": "postgres",
-            "PASSWORD": "#voice4all@256",
-            "HOST": "db.mfhnvhvailjwvrvazcrp.supabase.co",
-            "PORT": "5432",
-            "OPTIONS": {
-                "sslmode": "require",
-            },
-        }
-    }
-else:
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
-        }
-    }
+# if SUPABASE_DATABASE_URL:
+#     DATABASES = {
+#         "default": {
+#             "ENGINE": "django.db.backends.postgresql",
+#             "NAME": "postgres",
+#             "USER": "postgres",
+#             "PASSWORD": "#voice4all@256",
+#             "HOST": "db.mfhnvhvailjwvrvazcrp.supabase.co",
+#             "PORT": "5432",
+#             "OPTIONS": {
+#                 "sslmode": "require",
+#             },
+#         }
+#     }
+# else:
+#     DATABASES = {
+#         "default": {
+#             "ENGINE": "django.db.backends.sqlite3",
+#             "NAME": BASE_DIR / "db.sqlite3",
+#         }
+#     }
 
 # import dj_database_url
 # # DATABASES["default"] = dj_database_url.parse(DATABASE_URL, conn_max_age=600, ssl_require=True) 
