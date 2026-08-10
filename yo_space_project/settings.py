@@ -30,7 +30,11 @@ SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-6t)&zl1h448n%v8den8805uieb
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 
-ALLOWED_HOSTS = ["*"]
+ALLOWED_HOSTS = [
+    "*",
+    "yospaceug.com",
+    "www.yospaceug.com",
+]
 
 # Africa's Talking Configuration
 AT_VOICE_NUMBER = os.getenv("AFRICASTALKING_VOICE_NUMBER", "+256323200925")
@@ -204,6 +208,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:8000",
     "https://yo-space-web.vercel.app",
     "https://yo-space-2g.onrender.com",
+    "https://yospacesug.com",
+    "https://www.yospacesug.com",
 ]
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https://.*\.vercel\.app$",
@@ -228,6 +234,9 @@ CSRF_TRUSTED_ORIGINS = [
     "https://*.vercel.app",
     "https://yo-space-web.vercel.app",
     "https://yo-space-2g.onrender.com",
+    # "https://yospacesug.com",
+    "https://yospacesug.com",
+    "https://www.yospacesug.com",
     "http://localhost:3000",
     "http://localhost:5173",
     "http://127.0.0.1:8000",

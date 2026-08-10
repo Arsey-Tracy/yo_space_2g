@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from typing import Any, Dict, Optional
 
 import requests
@@ -17,6 +18,7 @@ class IotecPaymentService:
         self.client_id = getattr(settings, "IOTEC_PAY_CLIENT_ID", "")
         self.client_secret = getattr(settings, "IOTEC_PAY_CLIENT_SECRET", "")
         self.timeout = int(getattr(settings, "IOTEC_PAY_TIMEOUT", 20))
+        self._token_expires_at = 0
 
     def _headers(self) -> Dict[str, str]:
         headers = {
@@ -27,8 +29,8 @@ class IotecPaymentService:
             headers["Authorization"] = f"Bearer {self.access_token}"
         return headers
 
-    def ensure_access_token(self) -> str:
-        if self.access_token:
+    def ensure_access_token(self, force_refresh=False):
+        if self.access_token and not force_refresh and time.time() < self._token_expires_at:
             return self.access_token
 
         if not self.client_id or not self.client_secret:
@@ -48,7 +50,24 @@ class IotecPaymentService:
         token_response.raise_for_status()
         token_payload = token_response.json()
         self.access_token = token_payload.get("access_token", "")
+        expires_in = int(token_payload.get("expires_in", 300) or 300)
+        self._token_expires_at = time.time() + max(60, expires_in - 30)
         return self.access_token
+
+    def _request_with_token_retry(self, method, url, **kwargs):
+        try:
+            self.ensure_access_token()
+            response = requests.request(method=method, url=url, headers=self._headers(), timeout=self.timeout, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.HTTPError as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code in {401, 403}:
+                self.ensure_access_token(force_refresh=True)
+                response = requests.request(method=method, url=url, headers=self._headers(), timeout=self.timeout, **kwargs)
+                response.raise_for_status()
+                return response
+            raise
 
     def initiate_collection(
         self,
@@ -72,11 +91,8 @@ class IotecPaymentService:
         }
 
         self.ensure_access_token()
-        response = requests.post(
-            f"{self.base_url}/api/collections/collect",
-            json=payload,
-            headers=self._headers(),
-            timeout=self.timeout,
+        response = self._request_with_token_retry(
+            "POST", f"{self.base_url}/api/collections/collect", json=payload
         )
         response.raise_for_status()
         payload = response.json()
@@ -90,10 +106,8 @@ class IotecPaymentService:
 
     def get_collection_status(self, *, external_id: str) -> Dict[str, Any]:
         self.ensure_access_token()
-        response = requests.get(
-            f"{self.base_url}/api/collections/external-id/{external_id}",
-            headers=self._headers(),
-            timeout=self.timeout,
+        response = self._request_with_token_retry(
+            "GET", f"{self.base_url}/api/collections/external-id/{external_id}"
         )
         response.raise_for_status()
         payload = response.json()
