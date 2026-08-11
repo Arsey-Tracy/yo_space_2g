@@ -1,5 +1,51 @@
 from rest_framework import serializers
+from django.contrib.auth import authenticate
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import CustomUser, Organization, Member
+
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """Allow login with either username or email.
+
+    SimpleJWT's default serializer only authenticates by username. This
+    normalizes the identifier (trim + lowercase) and looks up the user by
+    username OR email before authenticating, so users can sign in with either.
+    """
+
+    def validate(self, attrs):
+        identifier = str(attrs.get(self.username_field, '')).strip().lower()
+        password = attrs.get('password', '')
+
+        if not identifier or not password:
+            raise serializers.ValidationError(
+                'Must include "username" (or email) and "password".'
+            )
+
+        user = None
+        # Try username first, then email.
+        user = CustomUser.objects.filter(username__iexact=identifier).first()
+        if user is None:
+            user = CustomUser.objects.filter(email__iexact=identifier).first()
+
+        if user is not None:
+            user = authenticate(
+                request=self.context.get('request'),
+                username=user.username,
+                password=password,
+            )
+
+        if user is None or not user.is_active:
+            raise serializers.ValidationError(
+                'No active account found with the given credentials',
+                code='authorization',
+            )
+
+        refresh = self.get_token(user)
+        data = {
+            'refresh': str(refresh),
+            'access': str(refresh.access_token),
+        }
+        return data
 
 
 class CustomUserSerializer(serializers.ModelModelSerializer if hasattr(serializers, 'ModelModelSerializer') else serializers.ModelSerializer):

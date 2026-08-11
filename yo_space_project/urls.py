@@ -24,6 +24,10 @@ urlpatterns = [
     # Survey App
     path("api/", include("survey.urls")),
 
+    # Contact App (public)
+    path("api/", include("contact.urls")),
+    path("", include("contact.urls")),
+
     # Direct / Root Fallbacks
     path("", include("spaces.urls")),
     path('api/', include('wallet.urls')),

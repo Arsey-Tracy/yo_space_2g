@@ -1,3 +1,7 @@
 from django.contrib import admin
+from .models import SMSUsageLog
+admin.site.register(SMSUsageLog)
 
-# Register your models here.
+# @admin.register(SMSUsageLog)
+# class SMSUsageLogAdmin(admin.ModelAdmin):
+#     pass

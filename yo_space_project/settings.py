@@ -32,8 +32,8 @@ DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 
 ALLOWED_HOSTS = [
     "*",
-    "yospaceug.com",
-    "www.yospaceug.com",
+    "yospacesug.com",
+    "www.yospacesug.com",
 ]
 
 # Africa's Talking Configuration
@@ -49,13 +49,17 @@ else:
 AT_CONFERENCE_URL = "https://voice.africastalking.com/conference"
 AT_CALL_URL = "https://voice.africastalking.com/call"
 
-MARZPAY_API_KEY = "marz_XSdy2ucLiJxdNkvx"
-MARZPAY_API_SECRET = "6iOsdoqTuJ9yzCKchuI6cTAdB8GwsRVp"
-MARZPAY_BASE64_AUTHORIZATION_HEADER = "bWFyel9YU2R5MnVjTGlKeGROa3Z4OjZpT3Nkb3FUdUo5eXpDS2NodUk2Y1RBZEI4R3dzUlZw" # ✨ Easiest option! This is your API Key and Secret already encoded.
-MARZPAY_COLLECT_URL = "https://wallet.wearemarz.com/api/v1/collect-money"
+# MARZPAY_API_KEY = "marz_XSdy2ucLiJxdNkvx"
+# MARZPAY_API_SECRET = "6iOsdoqTuJ9yzCKchuI6cTAdB8GwsRVp"
+# MARZPAY_BASE64_AUTHORIZATION_HEADER = "bWFyel9YU2R5MnVjTGlKeGROa3Z4OjZpT3Nkb3FUdUo5eXpDS2NodUk2Y1RBZEI4R3dzUlZw" # ✨ Easiest option! This is your API Key and Secret already encoded.
+# MARZPAY_COLLECT_URL = "https://wallet.wearemarz.com/api/v1/collect-money"
 
 IOTEC_PAY_BASE_URL = os.getenv("IOTEC_PAY_BASE_URL", "https://pay.iotec.io")
+IOTEC_IDENTITY_URL = os.getenv("IOTEC_IDENTITY_URL", "https://id.iotec.io")
 IOTEC_PAY_ACCESS_TOKEN = os.getenv("IOTEC_PAY_ACCESS_TOKEN", "")
+IOTEC_PAY_CLIENT_ID = os.getenv("IOTEC_PAY_CLIENT_ID", "")
+IOTEC_PAY_CLIENT_SECRET = os.getenv("IOTEC_PAY_CLIENT_SECRET", "")
+IOTEC_PAY_WALLET_ID = os.getenv("IOTEC_PAY_WALLET_ID", "")
 IOTEC_PAY_TIMEOUT = int(os.getenv("IOTEC_PAY_TIMEOUT", "20"))
 
 
@@ -81,6 +85,7 @@ INSTALLED_APPS = [
     "spaces",
     "sms", "voice",
     "survey",
+    "contact",
 ]
 
 MIDDLEWARE = [
@@ -120,46 +125,42 @@ WSGI_APPLICATION = "yo_space_project.wsgi.application"
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+# Database configuration.
+# Production (Render) MUST use a persistent Postgres database via the DATABASE_URL
+# environment variable. SQLite is ephemeral on Render's filesystem and is wiped on
+# every restart/redeploy, which causes registered accounts to disappear and login
+# to fail with "No active account found with the given credentials".
+DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRESQL_DB_URL")
+
+if DATABASE_URL:
+    DATABASES = {
+        "default": dj_database_url.parse(
+            DATABASE_URL,
+            conn_max_age=600,
+            ssl_require=True,
+        )
     }
-}
-# USING SUPABASE DATABASE URL
-SUPABASE_DATABASE_URL = "postgresql://postgres:#voice4all%40256@db.mfhnvhvailjwvrvazcrp.supabase.co:5432/postgres"
-
-# # DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRESQL_DB_URL")
-
-# if SUPABASE_DATABASE_URL:
-#     DATABASES = {
-#         "default": {
-#             "ENGINE": "django.db.backends.postgresql",
-#             "NAME": "postgres",
-#             "USER": "postgres",
-#             "PASSWORD": "#voice4all@256",
-#             "HOST": "db.mfhnvhvailjwvrvazcrp.supabase.co",
-#             "PORT": "5432",
-#             "OPTIONS": {
-#                 "sslmode": "require",
-#             },
-#         }
-#     }
-# else:
-#     DATABASES = {
-#         "default": {
-#             "ENGINE": "django.db.backends.sqlite3",
-#             "NAME": BASE_DIR / "db.sqlite3",
-#         }
-#     }
-
-# import dj_database_url
-# # DATABASES["default"] = dj_database_url.parse(DATABASE_URL, conn_max_age=600, ssl_require=True) 
-# DATABASES["default"] = dj_database_url.parse(POSTGRESQL_DB_URL) 
+else:
+    # Local development fallback only.
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
 
 AUTH_USER_MODEL = "account.CustomUser"
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
+
+# Argon2 is Django's recommended hasher: more resistant to GPU/ASIC attacks and
+# typically faster than PBKDF2 at equivalent security, reducing login latency.
+# PBKDF2 is kept as a fallback so existing hashed passwords still verify.
+PASSWORD_HASHERS = [
+    "django.contrib.auth.hashers.Argon2PasswordHasher",
+    "django.contrib.auth.hashers.PBKDF2PasswordHasher",
+    "django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher",
+]
 
 AUTH_PASSWORD_VALIDATORS = [
     {

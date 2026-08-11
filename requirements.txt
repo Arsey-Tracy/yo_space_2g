@@ -5,6 +5,7 @@ charset-normalizer==3.4.9
 click==8.4.2
 colorama==0.4.6
 Django==6.0.7
+argon2-cffi==23.1.0
 django-cors-headers==4.9.0
 djangorestframework==3.17.1
 djangorestframework-simplejwt==5.5.0
