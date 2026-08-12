@@ -106,6 +106,9 @@ class RegisterSerializer(serializers.Serializer):
             name=validated_data['organization_name'],
             default_language=validated_data.get('default_language', 'en'),
         )
+        # Create wallet with default 500 SMS credits for new orgs
+        from wallet.models import Wallet
+        Wallet.objects.create(organization=org, balance_credits=500)
 
         Member.objects.create(
             user=user,

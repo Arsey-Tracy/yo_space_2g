@@ -25,7 +25,7 @@ class Organization(models.Model):
     name = models.CharField(max_length=255)
     sender_id = models.CharField(max_length=11, blank=True, null=True, help_text="Custom SMS Sender ID")
     default_language = models.CharField(max_length=20, default='en')
-    sms_balance = models.PositiveIntegerField(default=0, help_text="Remaining SMS credit balance")
+    sms_balance = models.PositiveIntegerField(default=500, help_text="Remaining SMS credit balance")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
