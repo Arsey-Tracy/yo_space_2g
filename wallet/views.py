@@ -191,7 +191,7 @@ class PurchaseSMSView(APIView):
             # on parsing this string again. Lookups always go through
             # payment_reference as a plain equality match instead.
             import time as _time
-            external_id = serializer.validated_data.get("external_id") or f"yospace.{org.id}.{wallet.id}.{int(_time.time())}"
+            external_id = serializer.validated_data.get("external_id") or f"yospace-{org.id}-{wallet.id}-{int(_time.time())}"
 
             service = IotecPaymentService()
             try:
