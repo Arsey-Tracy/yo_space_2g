@@ -28,7 +28,8 @@ load_dotenv(BASE_DIR / '.env')
 SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-6t)&zl1h448n%v8den8805uieb!^67$%3(jvgl6snrkzk8sl2n")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv("DEBUG", "True").lower() == "true"
+# DEBUG = os.getenv("DEBUG", "True").lower() == "true"
+DEBUG = True
 
 ALLOWED_HOSTS = [
     "*",
@@ -148,7 +149,6 @@ else:
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
-
 AUTH_USER_MODEL = "account.CustomUser"
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
@@ -177,6 +177,7 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+SMS_PRICE_OTHER_UGX = 60
 
 # Internationalization
 # https://docs.djangoproject.com/en/6.0/topics/i18n/

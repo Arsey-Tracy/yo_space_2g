@@ -33,12 +33,18 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
                 username=user.username,
                 password=password,
             )
-
-        if user is None or not user.is_active:
+        else:
             raise serializers.ValidationError(
-                'No active account found with the given credentials',
-                code='authorization',
+                'No user account found. Please register an acount.',
+                code='authorization'
             )
+
+        # if user is None or not user.is_active:
+        #     raise serializers.ValidationError(
+        #         'No active account found with the given credentials',
+        #         code='authorization',
+        #     )
+        
 
         refresh = self.get_token(user)
         data = {
@@ -48,7 +54,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         return data
 
 
-class CustomUserSerializer(serializers.ModelModelSerializer if hasattr(serializers, 'ModelModelSerializer') else serializers.ModelSerializer):
+class CustomUserSerializer(serializers.ModelSerializer if hasattr(serializers, 'ModelModelSerializer') else serializers.ModelSerializer):
     class Meta:
         model = CustomUser
         fields = ['id', 'username', 'email', 'phone', 'preferred_language', 'first_name', 'last_name']

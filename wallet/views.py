@@ -46,7 +46,7 @@ def get_or_create_wallet(org):
 def compute_purchase_credits(amount_ugx):
     if amount_ugx <= 0:
         return 0
-    return max(1, int(amount_ugx / settings.SMS_PRICE_OTHER_UGX))
+    return max(1, int(amount_ugx / getattr(settings, "SMS_PRICE_OTHER_UGX", 100)))
 
 
 def confirm_purchase_from_provider(external_id):
