@@ -173,17 +173,17 @@ class PurchaseSMSView(APIView):
                 return Response({"detail": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
 
             bundle_id = serializer.validated_data.get("bundle_id")
-            custom_amount = serializer.validated_data.get("custom_amount")
+            amount = serializer.validated_data.get("amount")
             bundle = SMSBundle.objects.filter(id=bundle_id, is_active=True).first() if bundle_id else None
 
             wallet = get_or_create_wallet(org)
             payment_method = serializer.validated_data.get("payment_method", "Mobile Money")
             phone_number = serializer.validated_data.get("phone_number", "") or serializer.validated_data.get("payment_reference", "")
 
-            if not bundle and not custom_amount:
+            if not bundle and not amount:
                 return Response({"detail": "Please select a bundle or enter a custom amount."}, status=status.HTTP_400_BAD_REQUEST)
 
-            amount_ugx = int(bundle.price if bundle else custom_amount)
+            amount_ugx = int(bundle.price if bundle else amount)
             credits_to_add = bundle.sms_count if bundle else compute_purchase_credits(amount_ugx)
 
             # No embedded delimiters that collide with a fixed prefix -- avoids

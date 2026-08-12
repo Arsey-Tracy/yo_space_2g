@@ -67,7 +67,7 @@ class SMSPurchaseSerializer(serializers.ModelSerializer):
 
 class PurchaseSMSSerializer(serializers.Serializer):
     bundle_id = serializers.IntegerField(required=False)
-    custom_amount = serializers.DecimalField(required=False, max_digits=10, decimal_places=2, min_value=0)
+    amount = serializers.DecimalField(required=False, max_digits=10, decimal_places=2, min_value=0)
     payment_method = serializers.CharField(max_length=50, default='Mobile Money')
     payment_reference = serializers.CharField(max_length=100, allow_blank=True, required=False)
     phone_number = serializers.CharField(max_length=20, allow_blank=True, required=False)
