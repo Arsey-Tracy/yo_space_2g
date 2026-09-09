@@ -92,6 +92,30 @@ class YoSpacesBackendTestCase(TestCase):
 
         # Test for SMS bundle purchase removed as subscription model is deprecated
 
+    def test_space_member_access_is_scoped_to_owner_organization(self):
+        other_owner = CustomUser.objects.create_user(
+            username='otherowner',
+            email='otherowner@example.com',
+            password='password123',
+            phone='+256700000002',
+        )
+        other_org = Organization.objects.create(owner=other_owner, name='Other Org')
+        other_space = Space.objects.create(
+            organization=other_org,
+            name='Other Space',
+            host_phone='+256700000002',
+        )
+        SpaceMember.objects.create(
+            space=other_space,
+            phone_number='+256777777777',
+            name='Foreign Member',
+        )
+
+        url = reverse('space-members-list', kwargs={'space_pk': other_space.id})
+        res = self.client.get(url)
+
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_ussd_role_routing(self):
         ussd_url = reverse('ussd-callback')
         # Host USSD dial

@@ -97,27 +97,81 @@ class SMSBundle(models.Model):
 
 
 class SMSPurchase(models.Model):
-    """
-    Tracks each SMS credit top-up purchase made by an organization.
-    """
+    """Record of SMS credits purchased via payment."""
+    PAYMENT_METHOD_CHOICES = [
+        ('mobile_money', 'Mobile Money'),
+        ('pesapal', 'PesaPal'),
+        ('iotec', 'ioTec'),
+        ('card', 'Card'),
+        ('marzpay', 'Marzpay'),
+    ]
     STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('completed', 'Completed'),
         ('failed', 'Failed'),
+        ('cancelled', 'Cancelled'),
     ]
-
-    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name='sms_purchases')
-    bundle = models.ForeignKey(SMSBundle, on_delete=models.SET_NULL, null=True, blank=True, related_name='purchases')
-    sms_count = models.PositiveIntegerField(help_text="Number of SMS credits purchased")
-    amount_paid = models.DecimalField(max_digits=12, decimal_places=2)
+    
+    organization = models.ForeignKey('account.Organization', on_delete=models.CASCADE, related_name='sms_purchases')
+    bundle = models.ForeignKey(SMSBundle, on_delete=models.SET_NULL, null=True, blank=True)
+    sms_count = models.PositiveIntegerField()
+    amount_paid = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-    payment_method = models.CharField(max_length=50, blank=True, help_text="e.g. Mobile Money, Bank Transfer")
-    payment_reference = models.CharField(max_length=100, blank=True, help_text="External transaction ID")
-    purchased_by = models.ForeignKey('account.CustomUser', on_delete=models.SET_NULL, null=True, blank=True)
+    payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES, default='pesapal')
+    payment_reference = models.CharField(max_length=100, unique=True)
+    pesapal_tracking_id = models.CharField(max_length=100, blank=True, null=True, unique=True)
+    pesapal_order_id = models.CharField(max_length=100, blank=True)
+    purchased_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
     purchased_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ['-purchased_at']
+        indexes = [
+            models.Index(fields=['organization', '-purchased_at']),
+            models.Index(fields=['payment_reference']),
+            models.Index(fields=['pesapal_tracking_id']),
+        ]
 
     def __str__(self):
-        return f"{self.organization.name} bought {self.sms_count} SMS ({self.status})"
+        return f"SMS Purchase - {self.sms_count} SMS for {self.organization.name} ({self.status})"
+
+class MarzpayPayment(models.Model):
+    """Track MarzPay Mobile Money collection transactions."""
+    STATUS_CHOICES = [
+        ('initiated', 'Initiated'),
+        ('processing', 'Processing'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+        ('cancelled', 'Cancelled'),
+    ]
+    
+    organization = models.ForeignKey('account.Organization', on_delete=models.CASCADE, related_name='marzpay_payments')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=3, default='UGX')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='initiated')
+
+    # MarzPay identifiers
+    reference = models.CharField(max_length=100, unique=True, help_text="UUID v4 sent as request reference")
+    transaction_uuid = models.CharField(max_length=100, blank=True, null=True, unique=True, help_text="MarzPay system UUID")
+    provider_transaction_id = models.CharField(max_length=100, blank=True, null=True, help_text="Telco network ID (e.g. MTN/Airtel ID)")
+
+    sms_purchase = models.OneToOneField(SMSPurchase, on_delete=models.SET_NULL, null=True, blank=True, related_name='marzpay_payment')
+
+    customer_phone = models.CharField(max_length=20)
+    description = models.TextField(blank=True)
+
+    initiated_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    last_updated_at = models.DateTimeField(auto_now=True)
+    webhook_data = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-initiated_at']
+        indexes = [
+            models.Index(fields=['organization', '-initiated_at']),
+            models.Index(fields=['reference']),
+            models.Index(fields=['transaction_uuid']),
+        ]
+
+    def __str__(self):
+        return f"MarzPay Payment - UGX {self.amount} ({self.status})"

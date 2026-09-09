@@ -9,13 +9,13 @@ https://docs.djangoproject.com/en/6.0/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
-
 from pathlib import Path
 import os
 # pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 # pyrefly: ignore [missing-import]
 import dj_database_url
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -51,22 +51,48 @@ else:
 AT_CONFERENCE_URL = "https://voice.africastalking.com/conference"
 AT_CALL_URL = "https://voice.africastalking.com/call"
 
-# MARZPAY_API_KEY = "marz_XSdy2ucLiJxdNkvx"
-# MARZPAY_API_SECRET = "6iOsdoqTuJ9yzCKchuI6cTAdB8GwsRVp"
-# MARZPAY_BASE64_AUTHORIZATION_HEADER = "bWFyel9YU2R5MnVjTGlKeGROa3Z4OjZpT3Nkb3FUdUo5eXpDS2NodUk2Y1RBZEI4R3dzUlZw" # ✨ Easiest option! This is your API Key and Secret already encoded.
-# MARZPAY_COLLECT_URL = "https://wallet.wearemarz.com/api/v1/collect-money"
+"""
+MARZPAY configruation 
+""" 
+MARZPAY_API_KEY = os.getenv("MARZPAY_API_KEY", "marz_XSdy2ucLiJxdNkvx")
+MARZPAY_API_SECRET = os.getenv("MARZPAY_API_SECRET", "6iOsdoqTuJ9yzCKchuI6cTAdB8GwsRVp")
+MARZPAY_BASE64_AUTHORIZATION_HEADER = os.getenv("MARZPAY_BASE64_AUTHORIZATION_HEADER", "bWFyel9YU2R5MnVjTGlKeGROa3Z4OjZpT3Nkb3FUdUo5eXpDS2NodUk2Y1RBZEI4R3dzUlZw") #✨ Easiest option! This is your API Key and Secret already encoded. Just copy and paste into your Authorization: Basic header.
+MARZPAY_COLLECT_URL = os.getenv("MARZPAY_COLLECT_URL", "https://wallet.wearemarz.com/api/v1/collect-money")
+MARZPAY_CALLBACK_URL = os.getenv("MARZPAY_CALLBACK_URL", "https://example.ngrok.io/api/marzpay/callback/")
+MARZPAY_USE_SANDBOX = os.getenv("MARZPAY_USE_SANDBOX", "False").lower() == "true"
 
-IOTEC_PAY_BASE_URL = os.getenv("IOTEC_PAY_BASE_URL", "https://pay.iotec.io")
-IOTEC_IDENTITY_URL = os.getenv("IOTEC_IDENTITY_URL", "https://id.iotec.io")
-IOTEC_PAY_ACCESS_TOKEN = os.getenv("IOTEC_PAY_ACCESS_TOKEN", "")
-IOTEC_PAY_CLIENT_ID = os.getenv("IOTEC_PAY_CLIENT_ID", "")
-IOTEC_PAY_CLIENT_SECRET = os.getenv("IOTEC_PAY_CLIENT_SECRET", "")
-IOTEC_PAY_WALLET_ID = os.getenv("IOTEC_PAY_WALLET_ID", "")
-IOTEC_PAY_TIMEOUT = int(os.getenv("IOTEC_PAY_TIMEOUT", "20"))
+"""
+IOTEC Pay configruation 
+""" 
+# IOTEC_PAY_BASE_URL = os.getenv("IOTEC_PAY_BASE_URL", "https://pay.iotec.io")
+# IOTEC_IDENTITY_URL = os.getenv("IOTEC_IDENTITY_URL", "https://id.iotec.io")
+# IOTEC_PAY_ACCESS_TOKEN = os.getenv("IOTEC_PAY_ACCESS_TOKEN", "")
+# IOTEC_PAY_CLIENT_ID = os.getenv("IOTEC_PAY_CLIENT_ID", "")
+# IOTEC_PAY_CLIENT_SECRET = os.getenv("IOTEC_PAY_CLIENT_SECRET", "")
+# IOTEC_PAY_WALLET_ID = os.getenv("IOTEC_PAY_WALLET_ID", "")
+# IOTEC_PAY_TIMEOUT = int(os.getenv("IOTEC_PAY_TIMEOUT", "20"))
 
+# PesaPal Configuration
+# Sandbox: https://cybqa.pesapal.com/pesapalv3
+# Live:    https://pay.pesapal.com/v3
 
-frontend_url = "https://yo-space-web.vercel.app/"
-backend_url = "https://yo-space-2g.onrender.com/"
+"""
+Pesapal configruation 
+"""
+
+# PESAPAL_BASE_URL = os.getenv("PESAPAL_BASE_URL", "https://cybqa.pesapal.com/pesapalv3")
+# PESAPAL_CONSUMER_KEY = os.getenv("PESAPAL_CONSUMER_KEY", "")
+# PESAPAL_CONSUMER_SECRET = os.getenv("PESAPAL_CONSUMER_SECRET", "")
+# PESAPAL_IPN_URL = os.getenv("PESAPAL_IPN_URL", "")
+# PESAPAL_NOTIFICATION_ID = os.getenv("PESAPAL_NOTIFICATION_ID", "")
+
+# SMS Pricing Configuration (UGX per SMS)
+SMS_PRICE_MTN_UGX = int(os.getenv("SMS_PRICE_MTN_UGX", "40"))
+SMS_PRICE_AIRTEL_UGX = int(os.getenv("SMS_PRICE_AIRTEL_UGX", "40"))
+SMS_PRICE_OTHER_UGX = int(os.getenv("SMS_PRICE_OTHER_UGX", "50"))
+
+frontend_url = os.getenv("FRONTEND_URL", os.getenv("frontend_url", "https://yo-space-web.vercel.app/"))
+backend_url = os.getenv("BACKEND_URL", os.getenv("backend_url", "https://yo-space-2g.onrender.com/"))
 # Application definition
 
 INSTALLED_APPS = [
@@ -88,6 +114,7 @@ INSTALLED_APPS = [
     "sms", "voice",
     "survey",
     "contact",
+    "settings",
 ]
 
 MIDDLEWARE = [
@@ -132,25 +159,50 @@ WSGI_APPLICATION = "yo_space_project.wsgi.application"
 # environment variable. SQLite is ephemeral on Render's filesystem and is wiped on
 # every restart/redeploy, which causes registered accounts to disappear and login
 # to fail with "No active account found with the given credentials".
-DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRESQL_DB_URL")
+# 
 
-if DATABASE_URL:
-    DATABASES = {
-        "default": dj_database_url.parse(
-            DATABASE_URL,
-            conn_max_age=600,
-            ssl_require=True,
-        )
+
+
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": os.getenv("DATABSE_NAME"),
+        "USER": os.getenv("DATABASE_USER"),
+        "PASSWORD": os.getenv("DATABASE_PASSWORD"),
+        "HOST": os.getenv("DATABASE_HOST"),
+        "PORT": os.getenv("POSTGRESQL_PORT"),
     }
-else:
-    # Local development fallback only.
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
-        }
-    }
+}
+
+"""the  database  intaliztion 
+"""
+# DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRESQL_DB_URL")
+
+# if DATABASE_URL:
+#     DATABASES = {
+#         "default": dj_database_url.parse(
+#             DATABASE_URL,
+#             conn_max_age=600,
+#             ssl_require=True,
+#         )
+#     }
+# else:
+#     # Local development fallback only.
+#     DATABASES = {
+#         "default": {
+#         "ENGINE": "django.db.backends.postgresql",
+#             "NAME":,
+#         }
+#     }
+#     # DATABASES = {
+#     #     "default": {gt
+#     #         "ENGINE": "django.db.backends.sqlite3",
+#     #         "NAME": BASE_DIR / "db.sqlite3",
+#     #     }
+#     # }
+
 AUTH_USER_MODEL = "account.CustomUser"
+
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
 
@@ -179,6 +231,8 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 SMS_PRICE_OTHER_UGX = 60
+
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Internationalization
 # https://docs.djangoproject.com/en/6.0/topics/i18n/
@@ -217,6 +271,7 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https://.*\.vercel\.app$",
     r"^https://.*\.onrender\.com$",
+    
 ]
 CORS_ALLOW_HEADERS = [
     'accept',
@@ -237,7 +292,6 @@ CSRF_TRUSTED_ORIGINS = [
     "https://*.vercel.app",
     "https://yo-space-web.vercel.app",
     "https://yo-space-2g.onrender.com",
-    # "https://yospacesug.com",
     "https://yospacesug.com",
     "https://www.yospacesug.com",
     "http://localhost:3000",

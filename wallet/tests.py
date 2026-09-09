@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from wallet.services import IotecPaymentService
+from archive.services import IotecPaymentService
 from wallet.views import compute_purchase_credits
 
 

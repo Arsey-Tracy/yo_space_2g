@@ -8,7 +8,7 @@ urlpatterns = [
     path("api/auth/", include("account.urls")),
     path("auth/", include("account.urls")),
     
-    # Subscriptions & Billing
+    # Billing
     path("api/billing/", include("wallet.urls")),
     path("billing/", include("wallet.urls")),
     
@@ -23,6 +23,9 @@ urlpatterns = [
     
     # Survey App
     path("api/", include("survey.urls")),
+
+    # Settings App
+    path("api/settings/", include("settings.urls")),
 
     # Contact App (public)
     path("api/", include("contact.urls")),

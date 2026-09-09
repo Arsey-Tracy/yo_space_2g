@@ -5,8 +5,9 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from .models import CustomUser, Organization, Member
 from .serializers import (
     CustomUserSerializer, OrganizationSerializer,
-    RegisterSerializer, MemberSerializer
+    RegisterSerializer, MemberSerializer, LoginSerializer
 )
+from django.contrib.auth import login
 
 
 class RegisterView(APIView):
@@ -29,8 +30,30 @@ class RegisterView(APIView):
 
             return Response(res_data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 class LoginView(APIView):
-    pass
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = LoginSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            user = serializer.validated_data['user']
+            org = serializer.validated_data.get('organization')
+            login(request, user)
+            refresh = RefreshToken.for_user(user)
+
+            res_data = {
+                'user': CustomUserSerializer(user).data,
+                'organization': OrganizationSerializer(org).data if org else None,
+                'tokens': {
+                    'refresh': str(refresh),
+                    'access': str(refresh.access_token),
+                }
+            }
+            return Response(res_data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 class ProfileView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 

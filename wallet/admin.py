@@ -1,8 +1,10 @@
 # pyrefly: ignore [missing-import]
 from django.contrib import admin
 # pyrefly: ignore [missing-import]
-from .models import Wallet, WalletTransaction, SmsUsageRecord, TelecomNetwork
+from .models import SMSBundle, Wallet, WalletTransaction, SmsUsageRecord, TelecomNetwork,  SMSPurchase
 
+# Registering SMSBundle with default admin interface
+admin.site.register(SMSBundle)  
 @admin.register(Wallet)
 class WalletAdmin(admin.ModelAdmin):
     list_display = ('organization', 'balance_credits', 'cash_balance_ugx', 'updated_at')
@@ -28,4 +30,11 @@ class TelecomNetworkAdmin(admin.ModelAdmin):
     list_display = ('name', 'code', 'provider_cost_ugx', 'markup_ugx', 'selling_price_ugx', 'is_active', 'updated_at')
     list_editable = ('provider_cost_ugx', 'markup_ugx', 'selling_price_ugx', 'is_active')
     search_fields = ('name', 'code')
+
+
+@admin.register(SMSPurchase)
+class SMSPurchaseAdmin(admin.ModelAdmin):
+    list_display = ('organization', 'sms_count', 'amount_paid', 'status', 'payment_method', 'purchased_at')
+    list_filter = ('status', 'payment_method')
+    search_fields = ('payment_reference', 'pesapal_tracking_id')
 

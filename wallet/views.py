@@ -1,13 +1,21 @@
 import requests
+import logging
+
+from .helpers import compute_purchase_credits, normalize_phone_number_e164
 from django.conf import settings
 from django.db import transaction as db_transaction
 from django.db.utils import OperationalError
+from django.utils import timezone
+
 from rest_framework import viewsets, permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
+from uuid import uuid4
+from urllib.parse import urlencode
+
 from account.models import Organization, Member
-from .services import IotecPaymentService
+from .marzpay_service import MarzpayError, MarzpayService
 from .models import (
     Wallet,
     WalletTransaction,
@@ -15,6 +23,7 @@ from .models import (
     TelecomNetwork,
     SMSBundle,
     SMSPurchase,
+    MarzpayPayment
 )
 from .serializers import (
     WalletSerializer,
@@ -23,9 +32,12 @@ from .serializers import (
     TelecomNetworkSerializer,
     SMSBundleSerializer,
     SMSPurchaseSerializer,
-    PurchaseSMSSerializer,
+    SendSMSSerializer,
+    MarzpayPaymentSerializer, 
+    InitiateMarzpayPaymentSerializer
 )
 
+logger = logging.getLogger(__name__)
 
 def get_organization_for_user(user):
     org = Organization.objects.filter(owner=user).first()
@@ -41,72 +53,6 @@ def get_or_create_wallet(org):
         defaults={"balance_credits": getattr(org, "sms_balance", 0) or 0, "cash_balance_ugx": 0},
     )
     return wallet
-
-
-def compute_purchase_credits(amount_ugx):
-    if amount_ugx <= 0:
-        return 0
-    return max(1, int(amount_ugx / getattr(settings, "SMS_PRICE_OTHER_UGX", 100)))
-
-
-def confirm_purchase_from_provider(external_id):
-    """Single source of truth for crediting a wallet after a top-up.
-    Called from BOTH the status-poll view and the webhook -- neither one
-    trusts its own caller's claimed status; both re-verify with ioTec
-    directly inside this lock before crediting anything.
-
-    select_for_update() on the purchase row means if the poll and the
-    webhook fire within milliseconds of each other, the second one
-    blocks until the first commits, sees status='completed', and exits
-    without crediting twice.
-    """
-    with db_transaction.atomic():
-        purchase = (
-            SMSPurchase.objects
-            .select_for_update()
-            .select_related("organization", "organization__wallet")
-            .filter(payment_reference=external_id)
-            .first()
-        )
-        if not purchase:
-            return None  # unknown reference -- nothing to credit, caller decides how to respond
-        if purchase.status == "completed":
-            return purchase  # already credited, no-op
-
-        service = IotecPaymentService()
-        provider_result = service.get_collection_status(external_id=external_id)
-        provider_status = str(provider_result.get("status", "")).lower()
-
-        if provider_status == "failed":
-            purchase.status = "failed"
-            purchase.save(update_fields=["status"])
-            return purchase
-
-        if provider_status != "success":
-            return purchase  # still pending per ioTec -- do not credit
-
-        wallet = get_or_create_wallet(purchase.organization)
-        wallet.balance_credits += purchase.sms_count
-        wallet.save(update_fields=["balance_credits"])
-
-        purchase.status = "completed"
-        purchase.save(update_fields=["status"])
-
-        if hasattr(purchase.organization, "sms_balance"):
-            purchase.organization.sms_balance = wallet.balance_credits
-            purchase.organization.save(update_fields=["sms_balance"])
-
-        WalletTransaction.objects.create(
-            wallet=wallet,
-            transaction_type="topup",
-            amount_paid_ugx=int(purchase.amount_paid),
-            credits_added=purchase.sms_count,
-            payment_method=purchase.payment_method or "Mobile Money",
-            payment_reference=external_id,
-            notes="Credits applied after provider-verified confirmation",
-        )
-        return purchase
-
 
 class WalletViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
@@ -160,133 +106,100 @@ class SMSBundleListView(APIView):
 
 
 class PurchaseSMSView(APIView):
+    """Initiate SMS bundle purchase via MarzPay (wallet top-up)."""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         try:
-            serializer = PurchaseSMSSerializer(data=request.data)
-            if not serializer.is_valid():
-                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
             org = get_organization_for_user(request.user)
             if not org:
                 return Response({"detail": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
 
+            data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+            if "custom_amount" in data and "amount" not in data:
+                data["amount"] = data.pop("custom_amount")
+            if not data.get("email"):
+                data["email"] = getattr(request.user, "email", "") or ""
+
+            serializer = InitiateMarzpayPaymentSerializer(data=data)
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
             bundle_id = serializer.validated_data.get("bundle_id")
-            amount = serializer.validated_data.get("amount")
-            bundle = SMSBundle.objects.filter(id=bundle_id, is_active=True).first() if bundle_id else None
+            bundle = None
+            if bundle_id:
+                bundle = SMSBundle.objects.filter(id=bundle_id, is_active=True).first()
+                if not bundle:
+                    return Response({"detail": "Bundle not found."}, status=status.HTTP_404_NOT_FOUND)
+                amount_ugx = int(bundle.price)
+                sms_count = bundle.sms_count
+                description = f"SMS Credits - {bundle.name}"
+            else:
+                amount_ugx = int(serializer.validated_data["amount"])
+                sms_price = getattr(settings, "SMS_PRICE_OTHER_UGX", 50)
+                sms_count = max(1, int(amount_ugx / sms_price))
+                description = serializer.validated_data.get("description", f"SMS Credits - {sms_count} SMS")
 
-            wallet = get_or_create_wallet(org)
-            payment_method = serializer.validated_data.get("payment_method", "Mobile Money")
-            phone_number = serializer.validated_data.get("phone_number", "") or serializer.validated_data.get("payment_reference", "")
-
-            if not bundle and not amount:
-                return Response({"detail": "Please select a bundle or enter a custom amount."}, status=status.HTTP_400_BAD_REQUEST)
-
-            amount_ugx = int(bundle.price if bundle else amount)
-            credits_to_add = bundle.sms_count if bundle else compute_purchase_credits(amount_ugx)
-
-            # No embedded delimiters that collide with a fixed prefix -- avoids
-            # the earlier split('-')[1] class of bug entirely by never relying
-            # on parsing this string again. Lookups always go through
-            # payment_reference as a plain equality match instead.
-            import time as _time
-            external_id = serializer.validated_data.get("external_id") or f"yospace-{org.id}-{wallet.id}-{int(_time.time())}"
-
-            service = IotecPaymentService()
-            try:
-                provider_result = service.initiate_collection(
-                    wallet_id=settings.IOTEC_PAY_WALLET_ID,
-                    external_id=external_id,
-                    amount=amount_ugx,
-                    phone_number=phone_number,
-                    description=f"YoSpaces top-up: {bundle.name if bundle else 'custom amount'}",
-                )
-            except requests.RequestException as exc:
-                return Response({"detail": f"Payment provider request failed: {exc}"}, status=status.HTTP_502_BAD_GATEWAY)
-            except RuntimeError as exc:
-                return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+            phone_e164 = normalize_phone_number_e164(serializer.validated_data["phone_number"])
+            reference = str(uuid4())  # MarzPay requires UUID v4
 
             with db_transaction.atomic():
-                purchase = SMSPurchase.objects.create(
+                sms_purchase = SMSPurchase.objects.create(
                     organization=org,
                     bundle=bundle,
-                    sms_count=credits_to_add,
+                    sms_count=sms_count,
                     amount_paid=amount_ugx,
                     status="pending",
-                    payment_method=payment_method,
-                    payment_reference=external_id,
+                    payment_method="marzpay",
+                    payment_reference=reference,
                     purchased_by=request.user,
                 )
+                
+                marzpay_payment = MarzpayPayment.objects.create(
+                    organization=org,
+                    amount=amount_ugx,
+                    currency="UGX",
+                    reference=reference,
+                    customer_phone=phone_e164,
+                    description=description,
+                    sms_purchase=sms_purchase,
+                    status="initiated"
+                )
 
-            return Response({
-                "message": "Payment collection initiated. Credits will be applied after confirmation.",
-                "bundle": SMSBundleSerializer(bundle).data if bundle else None,
-                "credits_estimate": credits_to_add,
-                "current_sms_balance": wallet.balance_credits,
-                "purchase": SMSPurchaseSerializer(purchase).data,
-                "provider": provider_result,
-            }, status=status.HTTP_201_CREATED)
-
-        except OperationalError:
-            return Response(
-                {"detail": "Billing database schema not ready. Please apply migrations and retry."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            service = MarzpayService()
+            api_res = service.initiate_collection(
+                amount=amount_ugx,
+                phone_number=phone_e164,
+                reference=reference,
+                description=description,
+                callback_url=getattr(settings, 'MARZPAY_CALLBACK_URL', '')
             )
 
+            # Store returned transaction UUID
+            txn_uuid = api_res.get("data", {}).get("transaction", {}).get("uuid")
+            marzpay_payment.transaction_uuid = txn_uuid
+            marzpay_payment.status = "processing"
+            marzpay_payment.save(update_fields=["transaction_uuid", "status"])
 
-class PaymentCollectionStatusView(APIView):
-    """Frontend polls this after PurchaseSMSView. Safe to call repeatedly
-    -- confirm_purchase_from_provider is idempotent."""
+            return Response({
+                "message": "Mobile money payment prompt sent. Please approve on your phone.",
+                "reference": reference,
+                "transaction_uuid": txn_uuid,
+                "payment": MarzpayPaymentSerializer(marzpay_payment).data,
+            }, status=status.HTTP_201_CREATED)
 
-    permission_classes = [permissions.IsAuthenticated]
+        except MarzpayError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            logger.exception("MarzPay initiation failed: %s", exc)
+            return Response({"detail": "Internal server error."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    def get(self, request, external_id):
-        org = get_organization_for_user(request.user)
-        if not org:
-            return Response({"detail": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        try:
-            purchase = confirm_purchase_from_provider(external_id)
-        except requests.RequestException as exc:
-            return Response({"detail": f"Payment provider request failed: {exc}"}, status=status.HTTP_502_BAD_GATEWAY)
-
-        if not purchase or purchase.organization_id != org.id:
-            return Response({"detail": "Purchase not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        return Response({
-            "organization": org.name,
-            "external_id": external_id,
-            "status": purchase.status,
-            "wallet_balance": get_or_create_wallet(org).balance_credits,
-        })
-
-
-class PaymentCallbackView(APIView):
-    """Public webhook target for ioTec. CRITICAL: the request body's
-    claimed status is NEVER trusted directly -- it only tells us which
-    external_id to go re-verify. confirm_purchase_from_provider makes its
-    own authenticated call back to ioTec before crediting anything, so a
-    forged POST to this endpoint cannot manufacture free credits."""
-
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request):
-        external_id = request.data.get("externalId") or request.data.get("external_id")
-        if not external_id:
-            return Response({"detail": "Missing external id."}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            confirm_purchase_from_provider(external_id)
-        except requests.RequestException as exc:
-            # Still 200 -- ioTec may retry on non-2xx, and retrying won't
-            # fix a network error on our side. Log it, respond OK, let the
-            # next poll or retry pick it up.
-            import logging
-            logging.getLogger(__name__).error("Callback verification failed for %s: %s", external_id, exc)
-
-        return Response({"received": True, "external_id": external_id})
-
+        except OperationalError as exc:
+            logger.error("Database error: %s", exc)
+            return Response(
+                {"detail": "Database error. Please retry."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
 class SMSPurchaseHistoryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -338,3 +251,330 @@ class TelecomNetworkViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         return TelecomNetwork.objects.filter(is_active=True)
+
+class SendSMSView(APIView):
+    """Send SMS and deduct from wallet."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        try:
+            serializer = SendSMSSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+            org = get_organization_for_user(request.user)
+            if not org:
+                return Response({"detail": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            recipients = serializer.validated_data["recipients"]
+            message = serializer.validated_data["message"]
+            broadcast_id = serializer.validated_data.get("broadcast_id") or str(uuid4())
+
+            # Get wallet
+            wallet = get_or_create_wallet(org)
+            
+            # Check balance
+            if wallet.balance_credits < len(recipients):
+                return Response({
+                    "detail": f"Insufficient SMS balance. Required: {len(recipients)}, Available: {wallet.balance_credits}",
+                    "required": len(recipients),
+                    "available": wallet.balance_credits,
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Import SMS sending function
+            from sms.views import send_bulk_sms
+
+            # Send SMS
+            result = send_bulk_sms(
+                recipients,
+                message,
+                sender_id=getattr(org, "sender_id", None),
+                org_name=org.name,
+            )
+
+            if not result.get("success"):
+                return Response({
+                    "detail": f"SMS sending failed: {result.get('error', 'Unknown error')}",
+                    "error": result.get("error"),
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Deduct from wallet
+            with db_transaction.atomic():
+                wallet.balance_credits -= len(recipients)
+                wallet.save(update_fields=["balance_credits"])
+
+                # Create usage record
+                usage_record = SmsUsageRecord.objects.create(
+                    wallet=wallet,
+                    broadcast_id=broadcast_id,
+                    recipients_count=len(recipients),
+                    credits_deducted=len(recipients),
+                    status="sent",
+                )
+
+                # Create transaction record
+                WalletTransaction.objects.create(
+                    wallet=wallet,
+                    transaction_type="deduction",
+                    amount_paid_ugx=0,
+                    credits_added=-len(recipients),
+                    payment_method="wallet",
+                    payment_reference=broadcast_id,
+                    notes=f"SMS broadcast to {len(recipients)} recipients",
+                )
+
+                # Update organization
+                if hasattr(org, "sms_balance"):
+                    org.sms_balance = wallet.balance_credits
+                    org.save(update_fields=["sms_balance"])
+
+            return Response({
+                "message": f"SMS sent successfully to {len(recipients)} recipients",
+                "broadcast_id": broadcast_id,
+                "recipients_count": len(recipients),
+                "credits_deducted": len(recipients),
+                "remaining_balance": wallet.balance_credits,
+                "provider_response": result.get("response"),
+            }, status=status.HTTP_200_OK)
+
+        except Exception as exc:
+            logger.exception("Failed to send SMS: %s", exc)
+            return Response(
+                {"detail": f"Error: {str(exc)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+def apply_completed_marzpay_payment(marzpay_payment: MarzpayPayment, provider_tx_id: str = None) -> MarzpayPayment:
+    """Idempotently credit organization wallet after MarzPay reports completed collection."""
+    payment_id = marzpay_payment.pk
+    with db_transaction.atomic():
+        # 1. Fetch ID first (no lock) to avoid outer join issues with select_for_update
+        target_id = MarzpayPayment.objects.filter(pk=payment_id).values_list('pk', flat=True).first()
+        if not target_id:
+            return marzpay_payment
+
+        # 2. Lock specifically by ID on the base table only
+        payment = MarzpayPayment.objects.select_for_update().get(pk=target_id)
+
+        purchase = payment.sms_purchase
+        if purchase:
+            # Lock the purchase separately on its base table to avoid join locking issues
+            purchase = SMSPurchase.objects.select_for_update().get(pk=purchase.pk)
+
+        if purchase and purchase.status == "completed":
+            payment.status = "completed"
+            if provider_tx_id:
+                payment.provider_transaction_id = provider_tx_id
+            payment.save(update_fields=["status", "provider_transaction_id", "last_updated_at"])
+            return payment
+
+        credits = purchase.sms_count if purchase else compute_purchase_credits(int(payment.amount or 0))
+        wallet = get_or_create_wallet(payment.organization)
+        wallet.balance_credits += credits
+        wallet.save(update_fields=["balance_credits"])
+
+        if purchase:
+            purchase.status = "completed"
+            purchase.payment_method = "marzpay"
+            purchase.save(update_fields=["status", "payment_method"])
+
+        org = payment.organization
+        if hasattr(org, "sms_balance"):
+            org.sms_balance = wallet.balance_credits
+            org.save(update_fields=["sms_balance"])
+
+        WalletTransaction.objects.create(
+            wallet=wallet,
+            transaction_type="topup",
+            amount_paid_ugx=int(payment.amount or 0),
+            credits_added=credits,
+            payment_method="marzpay",
+            payment_reference=payment.reference,
+            notes=f"MarzPay Mobile Money payment ({payment.reference})",
+        )
+
+        payment.status = "completed"
+        payment.completed_at = timezone.now()
+        if provider_tx_id:
+            payment.provider_transaction_id = provider_tx_id
+        payment.save(update_fields=["status", "completed_at", "provider_transaction_id", "last_updated_at"])
+
+    return MarzpayPayment.objects.get(pk=payment_id)
+
+
+class InitiateMarzpayPaymentView(APIView):
+    """Initiate a MarzPay mobile money prompt for SMS top-up."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        try:
+            org = get_organization_for_user(request.user)
+            if not org:
+                return Response({"detail": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            serializer = InitiateMarzpayPaymentSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+            bundle_id = serializer.validated_data.get("bundle_id")
+            bundle = None
+            if bundle_id:
+                bundle = SMSBundle.objects.filter(id=bundle_id, is_active=True).first()
+                if not bundle:
+                    return Response({"detail": "Bundle not found."}, status=status.HTTP_404_NOT_FOUND)
+                amount_ugx = int(bundle.price)
+                sms_count = bundle.sms_count
+                description = f"SMS Credits - {bundle.name}"
+            else:
+                amount_ugx = int(serializer.validated_data["amount"])
+                sms_price = getattr(settings, "SMS_PRICE_OTHER_UGX", 50)
+                sms_count = max(1, int(amount_ugx / sms_price))
+                description = serializer.validated_data.get("description", f"SMS Credits - {sms_count} SMS")
+
+            phone_e164 = normalize_phone_number_e164(serializer.validated_data["phone_number"])
+            reference = str(uuid4())  # MarzPay requires UUID v4
+
+            with db_transaction.atomic():
+                sms_purchase = SMSPurchase.objects.create(
+                    organization=org,
+                    bundle=bundle,
+                    sms_count=sms_count,
+                    amount_paid=amount_ugx,
+                    status="pending",
+                    payment_method="marzpay",
+                    payment_reference=reference,
+                    purchased_by=request.user,
+                )
+                
+                marzpay_payment = MarzpayPayment.objects.create(
+                    organization=org,
+                    amount=amount_ugx,
+                    currency="UGX",
+                    reference=reference,
+                    customer_phone=phone_e164,
+                    description=description,
+                    sms_purchase=sms_purchase,
+                    status="initiated"
+                )
+
+            service = MarzpayService()
+            api_res = service.initiate_collection(
+                amount=amount_ugx,
+                phone_number=phone_e164,
+                reference=reference,
+                description=description,
+                callback_url=getattr(settings, 'MARZPAY_CALLBACK_URL', '')
+            )
+
+            # Store returned transaction UUID
+            txn_uuid = api_res.get("data", {}).get("transaction", {}).get("uuid")
+            marzpay_payment.transaction_uuid = txn_uuid
+            marzpay_payment.status = "processing"
+            marzpay_payment.save(update_fields=["transaction_uuid", "status"])
+
+            return Response({
+                "message": "Mobile money payment prompt sent. Please approve on your phone.",
+                "reference": reference,
+                "transaction_uuid": txn_uuid,
+                "payment": MarzpayPaymentSerializer(marzpay_payment).data,
+            }, status=status.HTTP_201_CREATED)
+
+        except MarzpayError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            logger.exception("MarzPay initiation failed: %s", exc)
+            return Response({"detail": "Internal server error."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class MarzpayCallbackView(APIView):
+    """Webhook callback endpoint for MarzPay payment notifications."""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        try:
+            body = request.data
+            # Extract payload whether wrapped in dashboard `{ data: ... }` envelope or direct
+            payload = body.get("data") if isinstance(body.get("data"), dict) and "transaction" in body.get("data") else body
+
+            event_type = payload.get("event_type") or body.get("event_type")
+            transaction_data = payload.get("transaction", {})
+            collection_data = payload.get("collection", {})
+
+            reference = transaction_data.get("reference")
+            provider_tx_id = collection_data.get("provider_transaction_id")
+
+            if not reference:
+                return Response({"detail": "Missing reference in webhook payload"}, status=status.HTTP_400_BAD_REQUEST)
+
+            payment = MarzpayPayment.objects.filter(reference=reference).first()
+            if not payment:
+                logger.warning("MarzPay webhook received for unknown reference: %s", reference)
+                return Response({"received": True}, status=status.HTTP_200_OK)
+
+            payment.webhook_data = body
+            payment.save(update_fields=["webhook_data"])
+
+            if event_type == "collection.completed":
+                apply_completed_marzpay_payment(payment, provider_tx_id=provider_tx_id)
+            elif event_type in ["collection.failed", "collection.cancelled"]:
+                payment.status = "failed"
+                payment.save(update_fields=["status"])
+                if payment.sms_purchase:
+                    payment.sms_purchase.status = "failed"
+                    payment.sms_purchase.save(update_fields=["status"])
+
+            return Response({"received": True}, status=status.HTTP_200_OK)
+
+        except Exception as exc:
+            logger.exception("Error processing MarzPay webhook: %s", exc)
+            return Response({"received": True}, status=status.HTTP_200_OK)
+
+
+class MarzpayPaymentStatusView(APIView):
+    """Poll transaction status by reference.
+
+    Webhooks are the primary way a payment gets marked completed, but they can
+    be delayed, dropped, or unreachable (e.g. no public HTTPS callback URL in
+    local/dev environments). While the payment is still in flight, this view
+    actively verifies the transaction directly against the MarzPay API and
+    credits the wallet immediately if MarzPay reports it as completed, instead
+    of waiting indefinitely on a webhook that may never arrive.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, reference):
+        org = get_organization_for_user(request.user)
+        if not org:
+            return Response({"detail": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        payment = MarzpayPayment.objects.filter(reference=reference, organization=org).first()
+        if not payment:
+            return Response({"detail": "Payment not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if payment.status in ("initiated", "processing") and payment.transaction_uuid:
+            try:
+                service = MarzpayService()
+                api_res = service.get_transaction_status(payment.transaction_uuid)
+                data = api_res.get("data", {}) if isinstance(api_res, dict) else {}
+                txn = data.get("transaction", {}) or {}
+                collection = data.get("collection", {}) or {}
+                provider_status = txn.get("status")
+                provider_tx_id = collection.get("provider_transaction_id")
+
+                if provider_status == "completed":
+                    payment = apply_completed_marzpay_payment(payment, provider_tx_id=provider_tx_id)
+                elif provider_status in ("failed", "cancelled"):
+                    payment.status = "failed"
+                    payment.save(update_fields=["status", "last_updated_at"])
+                    if payment.sms_purchase:
+                        payment.sms_purchase.status = "failed"
+                        payment.sms_purchase.save(update_fields=["status"])
+            except MarzpayError as exc:
+                logger.warning("MarzPay status verification failed for %s: %s", reference, exc)
+
+        return Response({
+            "reference": reference,
+            "status": payment.status,
+            "wallet_balance": get_or_create_wallet(org).balance_credits,
+            "payment": MarzpayPaymentSerializer(payment).data,
+        })

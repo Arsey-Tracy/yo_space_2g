@@ -6,6 +6,7 @@ from .models import (
     TelecomNetwork,
     SMSBundle,
     SMSPurchase,
+    MarzpayPayment
 )
 
 
@@ -73,3 +74,36 @@ class PurchaseSMSSerializer(serializers.Serializer):
     phone_number = serializers.CharField(max_length=20, allow_blank=True, required=False)
     external_id = serializers.CharField(max_length=100, allow_blank=True, required=False)
 
+
+class SendSMSSerializer(serializers.Serializer):
+    """Serializer for sending SMS with wallet deduction."""
+    recipients = serializers.ListField(
+        child=serializers.CharField(max_length=20),
+        help_text="List of phone numbers to send SMS to"
+    )
+    message = serializers.CharField(max_length=1000)
+    space_id = serializers.IntegerField(required=False, allow_null=True)
+    broadcast_id = serializers.CharField(max_length=100, required=False)
+
+
+class MarzpayPaymentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MarzpayPayment
+        fields = [
+            'id', 'organization', 'amount', 'currency', 'status', 'reference',
+            'transaction_uuid', 'provider_transaction_id', 'customer_phone',
+            'description', 'initiated_at', 'completed_at'
+        ]
+        read_only_fields = ['id', 'initiated_at', 'completed_at']
+
+
+class InitiateMarzpayPaymentSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=500, required=False)
+    phone_number = serializers.CharField(max_length=20)
+    bundle_id = serializers.IntegerField(required=False)
+    description = serializers.CharField(max_length=255, required=False, default='SMS Credits Purchase')
+
+    def validate(self, attrs):
+        if not attrs.get("bundle_id") and attrs.get("amount") is None:
+            raise serializers.ValidationError("Provide either a bundle_id or a custom amount.")
+        return attrs

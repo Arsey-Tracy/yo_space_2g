@@ -13,43 +13,40 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
 
     def validate(self, attrs):
-        identifier = str(attrs.get(self.username_field, '')).strip().lower()
+        identifier = str(attrs.get('identifier') or attrs.get(self.username_field, '')).strip().lower()
         password = attrs.get('password', '')
 
         if not identifier or not password:
             raise serializers.ValidationError(
-                'Must include "username" (or email) and "password".'
+                'Must include "identifier" (username or email) and "password".'
             )
 
-        user = None
-        # Try username first, then email.
         user = CustomUser.objects.filter(username__iexact=identifier).first()
         if user is None:
             user = CustomUser.objects.filter(email__iexact=identifier).first()
 
-        if user is not None:
-            user = authenticate(
-                request=self.context.get('request'),
-                username=user.username,
-                password=password,
-            )
-        else:
+        if user is None:
             raise serializers.ValidationError(
-                'No user account found. Please register an acount.',
+                'No user account found. Please register an account.',
                 code='authorization'
             )
 
-        # if user is None or not user.is_active:
-        #     raise serializers.ValidationError(
-        #         'No active account found with the given credentials',
-        #         code='authorization',
-        #     )
-        
+        user = authenticate(
+            request=self.context.get('request'),
+            username=user.username,
+            password=password,
+        )
+        if user is None or not user.is_active:
+            raise serializers.ValidationError(
+                'Unable to log in with provided credentials.',
+                code='authorization'
+            )
 
         refresh = self.get_token(user)
         data = {
             'refresh': str(refresh),
             'access': str(refresh.access_token),
+            'user': CustomUserSerializer(user).data,
         }
         return data
 
@@ -117,6 +114,44 @@ class RegisterSerializer(serializers.Serializer):
         )
         return user, org
 
+class LoginSerializer(serializers.Serializer):
+    identifier = serializers.CharField(required=False, allow_blank=False)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    username = serializers.CharField(required=False, allow_blank=True)
+    password = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        identifier = (data.get('identifier') or data.get('email') or data.get('username') or '').strip()
+        password = data.get('password')
+
+        if not identifier or not password:
+            raise serializers.ValidationError('Must provide an identifier and password.')
+
+        user = CustomUser.objects.filter(username__iexact=identifier).first()
+        if user is None and '@' in identifier:
+            user = CustomUser.objects.filter(email__iexact=identifier).first()
+
+        if user is None:
+            raise serializers.ValidationError('Unable to log in with provided credentials.')
+
+        authenticated_user = authenticate(
+            request=self.context.get('request'),
+            username=user.username,
+            password=password,
+        )
+        if authenticated_user is None or not authenticated_user.is_active:
+            raise serializers.ValidationError('Unable to log in with provided credentials.')
+
+        organization = Organization.objects.filter(owner=authenticated_user).first()
+        if organization is None:
+            membership = Member.objects.filter(user=authenticated_user).order_by('id').first()
+            organization = membership.organization if membership else None
+
+        data['user'] = authenticated_user
+        data['organization'] = organization
+        return data
+
+    
 
 class MemberSerializer(serializers.ModelSerializer):
     user_details = CustomUserSerializer(source='user', read_only=True)
