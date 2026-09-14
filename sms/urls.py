@@ -8,5 +8,5 @@ router.register(r'broadcasts', BroadcastViewSet, basename='broadcast')
 urlpatterns = [
     path('sms/dlr/', sms_delivery_report, name='sms-delivery-report'),
     path('dlr/', sms_delivery_report, name='sms-delivery-report-short'),
-    path('', include(router.urls)),
+    path('sms/', include(router.urls)),
 ]

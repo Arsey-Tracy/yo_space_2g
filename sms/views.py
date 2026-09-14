@@ -13,6 +13,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from account.models import Organization
+from .permissions import IsOrganizationOwner
 from .models import SMSUsageLog, Broadcast
 from .serializers import BroadcastSerializer
 from wallet.models import Wallet, SmsUsageRecord, WalletTransaction
@@ -24,12 +25,16 @@ except Exception:  # pragma: no cover
 
 logger = logging.getLogger("yospaces")
 
-AFRICASTALKING_LIVE_USERNAME = getattr(settings, "AFRICASTALKING_LIVE_USERNAME", "yo_space")
+AFRICASTALKING_LIVE_USERNAME = getattr(
+    settings, "AFRICASTALKING_LIVE_USERNAME", "yo_space"
+)
 AFRICASTALKING_LIVE_API_KEY = getattr(settings, "AFRICASTALKING_LIVE_API_KEY", "")
 
 if africastalking and AFRICASTALKING_LIVE_API_KEY:
     try:
-        africastalking.initialize(AFRICASTALKING_LIVE_USERNAME, AFRICASTALKING_LIVE_API_KEY)
+        africastalking.initialize(
+            AFRICASTALKING_LIVE_USERNAME, AFRICASTALKING_LIVE_API_KEY
+        )
     except Exception as exc:
         logger.warning("Africa's Talking SDK initialization failed in SMS app: %s", exc)
 
@@ -45,7 +50,12 @@ def _normalize_phone(phone: str) -> str:
     return "+" + phone
 
 
-def send_bulk_sms(phone_numbers: list[str], message: str, sender_id: Optional[str] = None, org_name: Optional[str] = None) -> dict:
+def send_bulk_sms(
+    phone_numbers: list[str],
+    message: str,
+    sender_id: Optional[str] = None,
+    org_name: Optional[str] = None,
+) -> dict:
     """
     Sends bulk SMS via Africa's Talking API and returns result dictionary.
     Includes Organization Name prefix if custom sender ID is not set.
@@ -56,7 +66,11 @@ def send_bulk_sms(phone_numbers: list[str], message: str, sender_id: Optional[st
 
     normalized_recipients = list(set(_normalize_phone(p) for p in phone_numbers if p))
     if not normalized_recipients:
-        return {"success": False, "error": "No valid recipient phone numbers provided.", "count": 0}
+        return {
+            "success": False,
+            "error": "No valid recipient phone numbers provided.",
+            "count": 0,
+        }
 
     if africastalking and AFRICASTALKING_LIVE_API_KEY:
         try:
@@ -67,7 +81,11 @@ def send_bulk_sms(phone_numbers: list[str], message: str, sender_id: Optional[st
                     kwargs["sender_id"] = sender_id
                 response = sms_client.send(**kwargs)
                 logger.info("Africa's Talking SMS response: %s", response)
-                return {"success": True, "response": response, "count": len(normalized_recipients)}
+                return {
+                    "success": True,
+                    "response": response,
+                    "count": len(normalized_recipients),
+                }
         except Exception as exc:
             logger.error("Africa's Talking SDK SMS error: %s", exc)
 
@@ -90,40 +108,80 @@ def send_bulk_sms(phone_numbers: list[str], message: str, sender_id: Optional[st
 
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = resp.read().decode("utf-8")
-            return {"success": True, "response": body, "count": len(normalized_recipients)}
+            return {
+                "success": True,
+                "response": body,
+                "count": len(normalized_recipients),
+            }
     except Exception as exc:
         logger.error("REST SMS Fallback failed: %s", exc)
-        return {"success": False, "error": str(exc), "count": len(normalized_recipients)}
+        return {
+            "success": False,
+            "error": str(exc),
+            "count": len(normalized_recipients),
+        }
 
 
 class BroadcastViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [
+        permissions.IsAuthenticated,
+        IsOrganizationOwner,
+    ]
     serializer_class = BroadcastSerializer
 
+    def create(self, request, *args, **kwargs):
+        space_id = request.data.get("space")
+        if space_id is not None:
+            try:
+                from spaces.models import Space as SpaceModel
+                space = SpaceModel.objects.get(id=space_id)
+            except SpaceModel.DoesNotExist:
+                return Response(
+                    {"detail": "Space not found."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not space.organization or space.organization.owner_id != request.user.id:
+                return Response(
+                    {"detail": "You do not have permission to create broadcast for this organization."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        return super().create(request, *args, **kwargs)
+
     def get_queryset(self):
-        org = Organization.objects.filter(owner=self.request.user).first()
-        if org:
-            return Broadcast.objects.filter(space__organization=org)
-        return Broadcast.objects.none()
+        return Broadcast.objects.filter(
+            space__organization__owner=self.request.user
+        ).select_related("space", "space__organization", "created_by")
 
     def perform_create(self, serializer):
-        space = serializer.validated_data['space']
-        org = space.organization
-        raw_message = serializer.validated_data['message']
-        broadcast_status = serializer.validated_data.get('status', 'draft')
+        space = serializer.validated_data["space"]
+        organization = Organization.objects.filter(
+            owner=self.request.user,
+            id=space.organization_id,
+        ).first()
+        if not organization:
+            raise ValidationError(
+                "You do not have permission to send SMS from this Space"
+            )
+        raw_message = serializer.validated_data["message"]
+        broadcast_status = serializer.validated_data.get("status", "draft")
 
         # Auto-prefix org name if sender ID is absent
         message = raw_message
-        if org and org.name and not org.sender_id and not message.startswith(f"[{org.name}]"):
-            message = f"[{org.name}]: {raw_message}"
+        if (
+            organization
+            and organization.name
+            and not organization.sender_id
+            and not message.startswith(f"[{organization.name}]")
+        ):
+            message = f"[{organization.name}]: {raw_message}"
 
-        recipients = list(space.members.values_list('phone_number', flat=True))
+        recipients = list(space.members.values_list("phone_number", flat=True))
         recipients_count = len(recipients)
 
-        if broadcast_status == 'sent':
-            wallet = getattr(org, 'wallet', None)
+        if broadcast_status == "sent":
+            wallet = getattr(organization, "wallet", None)
             if not wallet:
-                wallet = Wallet.objects.create(organization=org)
+                wallet = Wallet.objects.create(organization=organization)
 
             if wallet.balance_credits < recipients_count:
                 raise ValidationError(
@@ -131,26 +189,37 @@ class BroadcastViewSet(viewsets.ModelViewSet):
                 )
 
             # Send SMS via Africa's Talking
-            res = send_bulk_sms(recipients, message, sender_id=org.sender_id, org_name=org.name)
+            res = send_bulk_sms(
+                recipients,
+                message,
+                sender_id=organization.sender_id,
+                org_name=organization.name,
+            )
 
             # Only deduct credits when the provider accepted the request
-            if not res.get('success'):
-                raise ValidationError(f"SMS sending failed: {res.get('error', 'Unknown error')}")
+            if not res.get("success"):
+                raise ValidationError(
+                    f"SMS sending failed: {res.get('error', 'Unknown error')}"
+                )
 
             wallet.balance_credits -= recipients_count
-            wallet.save(update_fields=['balance_credits'])
+            wallet.save(update_fields=["balance_credits"])
 
-            if hasattr(org, 'sms_balance'):
-                org.sms_balance = wallet.balance_credits
-                org.save(update_fields=['sms_balance'])
+            if hasattr(organization, "sms_balance"):
+                organization.sms_balance = wallet.balance_credits
+                organization.save(update_fields=["sms_balance"])
 
             WalletTransaction.objects.create(
                 wallet=wallet,
-                transaction_type='deduction',
+                transaction_type="deduction",
                 amount_paid_ugx=0,
                 credits_added=-recipients_count,
-                payment_method='SMS Send',
-                payment_reference=res.get('response', {}).get('SMSMessageData', {}).get('message', '') if isinstance(res.get('response'), dict) else '',
+                payment_method="SMS Send",
+                payment_reference=(
+                    res.get("response", {}).get("SMSMessageData", {}).get("message", "")
+                    if isinstance(res.get("response"), dict)
+                    else ""
+                ),
                 initiated_by=self.request.user,
                 notes=f"Broadcast to Space '{space.name}'",
             )
@@ -160,14 +229,14 @@ class BroadcastViewSet(viewsets.ModelViewSet):
                 broadcast_id=f"broadcast-{space.id}-{timezone.now().strftime('%Y%m%d%H%M%S')}",
                 recipients_count=recipients_count,
                 credits_deducted=recipients_count,
-                status='sent',
+                status="sent",
             )
 
             SMSUsageLog.objects.create(
-                organization=org,
+                organization=organization,
                 recipient_count=recipients_count,
                 sms_cost_credits=recipients_count,
-                description=f"Broadcast to Space '{space.name}'"
+                description=f"Broadcast to Space '{space.name}'",
             )
 
             serializer.save(
@@ -176,7 +245,7 @@ class BroadcastViewSet(viewsets.ModelViewSet):
                 recipients_count=recipients_count,
                 cost_credits=recipients_count,
                 sent_at=timezone.now(),
-                status='sent'
+                status="sent",
             )
         else:
             serializer.save(
@@ -184,7 +253,7 @@ class BroadcastViewSet(viewsets.ModelViewSet):
                 message=message,
                 recipients_count=recipients_count,
                 cost_credits=recipients_count,
-                status=broadcast_status
+                status=broadcast_status,
             )
 
 
@@ -197,6 +266,11 @@ def sms_delivery_report(request):
         msg_id = request.POST.get("id")
         status_text = request.POST.get("status")
         phoneNumber = request.POST.get("phoneNumber")
-        logger.info("SMS DLR Received - ID: %s, Phone: %s, Status: %s", msg_id, phoneNumber, status_text)
+        logger.info(
+            "SMS DLR Received - ID: %s, Phone: %s, Status: %s",
+            msg_id,
+            phoneNumber,
+            status_text,
+        )
         return HttpResponse("OK", content_type="text/plain")
     return HttpResponse("DLR Webhook Ready", content_type="text/plain")
