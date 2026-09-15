@@ -1,110 +1,98 @@
-from unittest.mock import patch
-
 from django.test import TestCase
 
-from archive.services import IotecPaymentService
-from wallet.views import compute_purchase_credits
+from account.models import CustomUser, Organization
+from wallet.models import Wallet, WalletTransaction
+from wallet.services import (
+    InsufficientCreditsError,
+    mark_sms_sent,
+    refund_sms_credits,
+    reserve_sms_credits,
+)
 
 
-class IotecPaymentServiceTests(TestCase):
-    def test_compute_purchase_credits_for_custom_amount(self):
-        self.assertEqual(compute_purchase_credits(4000), 100)
-        self.assertEqual(compute_purchase_credits(2500), 62)
+class WalletSMSCreditTests(TestCase):
+    def setUp(self):
+        self.user = CustomUser.objects.create_user(
+            username="wallet_test",
+            password="testpassword123",
+        )
+        self.organization = Organization.objects.create(
+            owner=self.user,
+            name="Wallet Test Organization",
+        )
+        self.wallet = Wallet.objects.create(
+            organization=self.organization,
+            balance_credits=100,
+            cash_balance_ugx=0,
+        )
 
-    def test_initiate_collection_returns_provider_payload(self):
-        class DummyResponse:
-            def __init__(self, payload, status_code=200):
-                self._payload = payload
-                self.status_code = status_code
+    def test_reserve_sms_credits(self):
+        wallet, usage = reserve_sms_credits(
+            organization=self.organization,
+            recipient_count=20,
+            broadcast_id="test-broadcast-1",
+            initiated_by=self.user,
+        )
 
-            def json(self):
-                return self._payload
+        wallet.refresh_from_db()
+        self.assertEqual(wallet.balance_credits, 80)
+        self.assertEqual(usage.credits_deducted, 20)
+        self.assertEqual(usage.status, "pending")
 
-            def raise_for_status(self):
-                return None
+        transaction = WalletTransaction.objects.get(
+            payment_reference="test-broadcast-1"
+        )
+        self.assertEqual(transaction.credits_added, -20)
+        self.assertEqual(transaction.transaction_type, "deduction")
 
-        with patch("wallet.services.requests.post") as mocked_post:
-            mocked_post.return_value = DummyResponse({
-                "status": "Pending",
-                "requestId": "req_123",
-                "externalId": "ext_123",
-            })
-
-            service = IotecPaymentService()
-            result = service.initiate_collection(
-                wallet_id="wallet-1",
-                external_id="ext_123",
-                amount=5000,
-                phone_number="0772000000",
-                currency="UGX",
+    def test_cannot_spend_more_than_wallet_balance(self):
+        with self.assertRaises(InsufficientCreditsError):
+            reserve_sms_credits(
+                organization=self.organization,
+                recipient_count=101,
+                broadcast_id="test-broadcast-2",
+                initiated_by=self.user,
             )
 
-        self.assertEqual(result["status"], "Pending")
-        self.assertEqual(result["requestId"], "req_123")
-        self.assertEqual(result["externalId"], "ext_123")
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance_credits, 100)
 
-    def test_get_collection_status_normalizes_success_state(self):
-        class DummyResponse:
-            def __init__(self, payload, status_code=200):
-                self._payload = payload
-                self.status_code = status_code
+    def test_mark_sms_sent(self):
+        _, usage = reserve_sms_credits(
+            organization=self.organization,
+            recipient_count=10,
+            broadcast_id="test-broadcast-3",
+            initiated_by=self.user,
+        )
 
-            def json(self):
-                return self._payload
+        mark_sms_sent(usage.id)
+        usage.refresh_from_db()
+        self.assertEqual(usage.status, "sent")
 
-            def raise_for_status(self):
-                return None
+    def test_failed_sms_refunds_credits(self):
+        _, usage = reserve_sms_credits(
+            organization=self.organization,
+            recipient_count=25,
+            broadcast_id="test-broadcast-4",
+            initiated_by=self.user,
+        )
 
-        with patch("wallet.services.requests.get") as mocked_get:
-            mocked_get.return_value = DummyResponse({
-                "status": "Success",
-                "requestId": "req_456",
-                "externalId": "ext_456",
-            })
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance_credits, 75)
 
-            service = IotecPaymentService()
-            result = service.get_collection_status(external_id="ext_456")
+        refund_sms_credits(
+            usage_record_id=usage.id,
+            reason="Provider failure",
+        )
 
-        self.assertEqual(result["status"], "Success")
-        self.assertEqual(result["externalId"], "ext_456")
-
-    def test_fetches_access_token_when_missing(self):
-        class DummyResponse:
-            def __init__(self, payload, status_code=200):
-                self._payload = payload
-                self.status_code = status_code
-
-            def json(self):
-                return self._payload
-
-            def raise_for_status(self):
-                return None
-
-        def fake_post(url, data=None, json=None, headers=None, timeout=None):
-            if url.endswith("/connect/token"):
-                return DummyResponse({
-                    "access_token": "token-123",
-                    "expires_in": 300,
-                    "token_type": "Bearer",
-                })
-            if url.endswith("/api/collections/collect"):
-                return DummyResponse({
-                    "status": "Pending",
-                    "requestId": "req_789",
-                    "externalId": "ext_789",
-                })
-            raise AssertionError(url)
-
-        with patch("wallet.services.requests.post", side_effect=fake_post):
-            service = IotecPaymentService(access_token=None)
-            service.client_id = "client-id"
-            service.client_secret = "client-secret"
-            result = service.initiate_collection(
-                wallet_id="wallet-1",
-                external_id="ext_789",
-                amount=5000,
-                phone_number="0772000000",
-            )
-
-        self.assertEqual(service.access_token, "token-123")
-        self.assertEqual(result["requestId"], "req_789")
+        self.wallet.refresh_from_db()
+        usage.refresh_from_db()
+        self.assertEqual(self.wallet.balance_credits, 100)
+        self.assertEqual(usage.status, "failed")
+        self.assertTrue(
+            WalletTransaction.objects.filter(
+                payment_reference="test-broadcast-4",
+                payment_method="wallet_refund",
+                credits_added=25,
+            ).exists()
+        )

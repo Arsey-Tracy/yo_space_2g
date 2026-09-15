@@ -16,7 +16,9 @@ from account.models import Organization
 from .permissions import IsOrganizationOwner
 from .models import SMSUsageLog, Broadcast
 from .serializers import BroadcastSerializer
-from wallet.models import Wallet, SmsUsageRecord, WalletTransaction
+from wallet.models import SmsUsageRecord
+from wallet.services import mark_sms_sent, refund_sms_credits, reserve_sms_credits
+from uuid import uuid4
 
 try:
     import africastalking  # type: ignore
@@ -134,6 +136,7 @@ class BroadcastViewSet(viewsets.ModelViewSet):
         if space_id is not None:
             try:
                 from spaces.models import Space as SpaceModel
+
                 space = SpaceModel.objects.get(id=space_id)
             except SpaceModel.DoesNotExist:
                 return Response(
@@ -142,7 +145,9 @@ class BroadcastViewSet(viewsets.ModelViewSet):
                 )
             if not space.organization or space.organization.owner_id != request.user.id:
                 return Response(
-                    {"detail": "You do not have permission to create broadcast for this organization."},
+                    {
+                        "detail": "You do not have permission to create broadcast for this organization."
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         return super().create(request, *args, **kwargs)
@@ -179,14 +184,21 @@ class BroadcastViewSet(viewsets.ModelViewSet):
         recipients_count = len(recipients)
 
         if broadcast_status == "sent":
-            wallet = getattr(organization, "wallet", None)
-            if not wallet:
-                wallet = Wallet.objects.create(organization=organization)
-
-            if wallet.balance_credits < recipients_count:
-                raise ValidationError(
-                    f"Insufficient SMS balance ({wallet.balance_credits} available, {recipients_count} required)."
+            broadcast_id = str(uuid4())
+            try:
+                wallet, usage_record = reserve_sms_credits(
+                    organization=organization,
+                    recipient_count=recipients_count,
+                    broadcast_id=broadcast_id,
+                    initiated_by=self.request.user,
+                    notes=f"Broadcast to Space '{space.name}'",
                 )
+            except Exception as exc:
+                from wallet.services import InsufficientCreditsError
+
+                if isinstance(exc, InsufficientCreditsError):
+                    raise ValidationError(str(exc))
+                raise
 
             # Send SMS via Africa's Talking
             res = send_bulk_sms(
@@ -196,41 +208,21 @@ class BroadcastViewSet(viewsets.ModelViewSet):
                 org_name=organization.name,
             )
 
-            # Only deduct credits when the provider accepted the request
             if not res.get("success"):
+                refund_sms_credits(
+                    usage_record_id=usage_record.id,
+                    reason=f"SMS provider failed: {res.get('error', 'Unknown error')}",
+                )
                 raise ValidationError(
-                    f"SMS sending failed: {res.get('error', 'Unknown error')}"
+                    "SMS sending failed. Your SMS credits were refunded."
                 )
 
-            wallet.balance_credits -= recipients_count
-            wallet.save(update_fields=["balance_credits"])
+            mark_sms_sent(usage_record.id)
+            wallet.refresh_from_db()
 
             if hasattr(organization, "sms_balance"):
                 organization.sms_balance = wallet.balance_credits
                 organization.save(update_fields=["sms_balance"])
-
-            WalletTransaction.objects.create(
-                wallet=wallet,
-                transaction_type="deduction",
-                amount_paid_ugx=0,
-                credits_added=-recipients_count,
-                payment_method="SMS Send",
-                payment_reference=(
-                    res.get("response", {}).get("SMSMessageData", {}).get("message", "")
-                    if isinstance(res.get("response"), dict)
-                    else ""
-                ),
-                initiated_by=self.request.user,
-                notes=f"Broadcast to Space '{space.name}'",
-            )
-
-            SmsUsageRecord.objects.create(
-                wallet=wallet,
-                broadcast_id=f"broadcast-{space.id}-{timezone.now().strftime('%Y%m%d%H%M%S')}",
-                recipients_count=recipients_count,
-                credits_deducted=recipients_count,
-                status="sent",
-            )
 
             SMSUsageLog.objects.create(
                 organization=organization,

@@ -13,8 +13,12 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
 
     def validate(self, attrs):
-        identifier = str(attrs.get('identifier') or attrs.get(self.username_field, '')).strip().lower()
-        password = attrs.get('password', '')
+        identifier = (
+            str(attrs.get("identifier") or attrs.get(self.username_field, ""))
+            .strip()
+            .lower()
+        )
+        password = attrs.get("password", "")
 
         if not identifier or not password:
             raise serializers.ValidationError(
@@ -27,35 +31,46 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         if user is None:
             raise serializers.ValidationError(
-                'No user account found. Please register an account.',
-                code='authorization'
+                "No user account found. Please register an account.",
+                code="authorization",
             )
 
         user = authenticate(
-            request=self.context.get('request'),
+            request=self.context.get("request"),
             username=user.username,
             password=password,
         )
         if user is None or not user.is_active:
             raise serializers.ValidationError(
-                'Unable to log in with provided credentials.',
-                code='authorization'
+                "Unable to log in with provided credentials.", code="authorization"
             )
 
         refresh = self.get_token(user)
         data = {
-            'refresh': str(refresh),
-            'access': str(refresh.access_token),
-            'user': CustomUserSerializer(user).data,
+            "refresh": str(refresh),
+            "access": str(refresh.access_token),
+            "user": CustomUserSerializer(user).data,
         }
         return data
 
 
-class CustomUserSerializer(serializers.ModelSerializer if hasattr(serializers, 'ModelModelSerializer') else serializers.ModelSerializer):
+class CustomUserSerializer(
+    serializers.ModelSerializer
+    if hasattr(serializers, "ModelModelSerializer")
+    else serializers.ModelSerializer
+):
     class Meta:
         model = CustomUser
-        fields = ['id', 'username', 'email', 'phone', 'preferred_language', 'first_name', 'last_name']
-        read_only_fields = ['id']
+        fields = [
+            "id",
+            "username",
+            "email",
+            "phone",
+            "preferred_language",
+            "first_name",
+            "last_name",
+        ]
+        read_only_fields = ["id"]
 
 
 class OrganizationSerializer(serializers.ModelSerializer):
@@ -66,20 +81,26 @@ class OrganizationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Organization
         fields = [
-            'id', 'name', 'sender_id',
-            'default_language', 'sms_balance', 'owner', 'spaces_count',
-            'created_at', 'updated_at'
+            "id",
+            "name",
+            "sender_id",
+            "default_language",
+            "sms_balance",
+            "owner",
+            "spaces_count",
+            "created_at",
+            "updated_at",
         ]
-        read_only_fields = ['id', 'sms_balance', 'created_at', 'updated_at']
+        read_only_fields = ["id", "sms_balance", "created_at", "updated_at"]
 
     def get_spaces_count(self, obj):
         return obj.spaces.count()
 
     def get_sms_balance(self, obj):
-        wallet = getattr(obj, 'wallet', None)
+        wallet = getattr(obj, "wallet", None)
         if wallet is not None:
             return wallet.balance_credits
-        return getattr(obj, 'sms_balance', 0)
+        return getattr(obj, "sms_balance", 0)
 
 
 class RegisterSerializer(serializers.Serializer):
@@ -88,31 +109,33 @@ class RegisterSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, min_length=6)
     phone = serializers.CharField(max_length=20, required=False, allow_blank=True)
     organization_name = serializers.CharField(max_length=255)
-    default_language = serializers.CharField(max_length=20, default='en')
+    default_language = serializers.CharField(max_length=20, default="en")
 
     def create(self, validated_data):
         user = CustomUser.objects.create_user(
-            username=validated_data['username'],
-            email=validated_data['email'],
-            password=validated_data['password'],
-            phone=validated_data.get('phone', ''),
-            preferred_language=validated_data.get('default_language', 'en')
+            username=validated_data["username"],
+            email=validated_data["email"],
+            password=validated_data["password"],
+            phone=validated_data.get("phone", ""),
+            preferred_language=validated_data.get("default_language", "en"),
         )
         org = Organization.objects.create(
             owner=user,
-            name=validated_data['organization_name'],
-            default_language=validated_data.get('default_language', 'en'),
+            name=validated_data["organization_name"],
+            default_language=validated_data.get("default_language", "en"),
         )
-        # Create wallet with default 500 SMS credits for new orgs
+        # New organizations must purchase SMS credits.
         from wallet.models import Wallet
-        Wallet.objects.create(organization=org, balance_credits=500)
 
-        Member.objects.create(
-            user=user,
+        Wallet.objects.create(
             organization=org,
-            role='admin'
+            balance_credits=0,
+            cash_balance_ugx=0,
         )
+
+        Member.objects.create(user=user, organization=org, role="admin")
         return user, org
+
 
 class LoginSerializer(serializers.Serializer):
     identifier = serializers.CharField(required=False, allow_blank=False)
@@ -121,42 +144,51 @@ class LoginSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
 
     def validate(self, data):
-        identifier = (data.get('identifier') or data.get('email') or data.get('username') or '').strip()
-        password = data.get('password')
+        identifier = (
+            data.get("identifier") or data.get("email") or data.get("username") or ""
+        ).strip()
+        password = data.get("password")
 
         if not identifier or not password:
-            raise serializers.ValidationError('Must provide an identifier and password.')
+            raise serializers.ValidationError(
+                "Must provide an identifier and password."
+            )
 
         user = CustomUser.objects.filter(username__iexact=identifier).first()
-        if user is None and '@' in identifier:
+        if user is None and "@" in identifier:
             user = CustomUser.objects.filter(email__iexact=identifier).first()
 
         if user is None:
-            raise serializers.ValidationError('Unable to log in with provided credentials.')
+            raise serializers.ValidationError(
+                "Unable to log in with provided credentials."
+            )
 
         authenticated_user = authenticate(
-            request=self.context.get('request'),
+            request=self.context.get("request"),
             username=user.username,
             password=password,
         )
         if authenticated_user is None or not authenticated_user.is_active:
-            raise serializers.ValidationError('Unable to log in with provided credentials.')
+            raise serializers.ValidationError(
+                "Unable to log in with provided credentials."
+            )
 
         organization = Organization.objects.filter(owner=authenticated_user).first()
         if organization is None:
-            membership = Member.objects.filter(user=authenticated_user).order_by('id').first()
+            membership = (
+                Member.objects.filter(user=authenticated_user).order_by("id").first()
+            )
             organization = membership.organization if membership else None
 
-        data['user'] = authenticated_user
-        data['organization'] = organization
+        data["user"] = authenticated_user
+        data["organization"] = organization
         return data
 
-    
 
 class MemberSerializer(serializers.ModelSerializer):
-    user_details = CustomUserSerializer(source='user', read_only=True)
+    user_details = CustomUserSerializer(source="user", read_only=True)
 
     class Meta:
         model = Member
-        fields = ['id', 'user', 'user_details', 'organization', 'role', 'created']
-        read_only_fields = ['id', 'created']
+        fields = ["id", "user", "user_details", "organization", "role", "created"]
+        read_only_fields = ["id", "created"]

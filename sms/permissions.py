@@ -13,7 +13,9 @@ class IsOrganizationOwner(permissions.BasePermission):
 
     def has_object_permission(self, request, view, obj):
         organization = getattr(obj, "organization", None)
-        if not organization is None:
+
+        if organization is None:
             space = getattr(obj, "space", None)
             organization = getattr(space, "organization", None)
+
         return organization is not None and organization.owner_id == request.user.id
