@@ -200,13 +200,22 @@ class BroadcastViewSet(viewsets.ModelViewSet):
                     raise ValidationError(str(exc))
                 raise
 
-            # Send SMS via Africa's Talking
-            res = send_bulk_sms(
-                recipients,
-                message,
-                sender_id=organization.sender_id,
-                org_name=organization.name,
-            )
+            try:
+                res = send_bulk_sms(
+                    recipients,
+                    message,
+                    sender_id=organization.sender_id,
+                    org_name=organization.name,
+                )
+            except Exception as exc:
+                refund_sms_credits(
+                    usage_record_id=usage_record.id,
+                    reason=f"SMS provider exception: {str(exc)}",
+                )
+
+                raise ValidationError(
+                    "SMS sending failed. Your SMS credits were refunded."
+                )
 
             if not res.get("success"):
                 refund_sms_credits(

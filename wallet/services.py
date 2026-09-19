@@ -70,7 +70,8 @@ def refund_sms_credits(*, usage_record_id, reason="SMS provider failed"):
         .select_related("wallet")
         .get(pk=usage_record_id)
     )
-
+    
+    # Prevent double refunds
     if usage_record.status != "pending":
         return usage_record
 
@@ -78,6 +79,14 @@ def refund_sms_credits(*, usage_record_id, reason="SMS provider failed"):
     credits = usage_record.credits_deducted
     wallet.balance_credits += credits
     wallet.save(update_fields=["balance_credits", "updated_at"])
+    
+    # Keep the legacy organisation balance synchronized
+    # while Organization balance still exists
+    organization = wallet.organization
+    
+    if hasattr(organization, "sms_balance"):
+        organization.sms_balance = wallet.balance_credits
+        organization.save(update_fields=["sms_balance"])
 
     WalletTransaction.objects.create(
         wallet=wallet,

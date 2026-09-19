@@ -10,6 +10,7 @@ from django.utils import timezone
 from rest_framework import viewsets, permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
 
 from uuid import uuid4
 from urllib.parse import urlencode
@@ -72,6 +73,7 @@ class WalletViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         org = get_organization_for_user(self.request.user)
         return Wallet.objects.filter(organization=org) if org else Wallet.objects.none()
+
 
 class WalletBalanceView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -270,6 +272,7 @@ class WalletTransactionViewSet(viewsets.ReadOnlyModelViewSet):
             else WalletTransaction.objects.none()
         )
 
+
 class SmsUsageRecordViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = SmsUsageRecordSerializer
@@ -348,27 +351,30 @@ class SendSMSView(APIView):
 
             from sms.views import send_bulk_sms
 
-            result = send_bulk_sms(
-                recipients,
-                message,
-                sender_id=getattr(org, "sender_id", None),
-                org_name=org.name,
-            )
+            try:
+                result = send_bulk_sms(
+                    recipients,
+                    message,
+                    sender_id=getattr(org, "sender_id", None),
+                    org_name=org.name,
+                )
+            except Exception as exc:
+                refund_sms_credits(
+                    usage_record_id=usage_record.id,
+                    reason=f"SMS provider exception: {str(exc)}",
+                )
+
+                raise ValidationError(
+                    "SMS sending failed. Your SMS credits were refunded."
+                )
 
             if not result.get("success"):
-                try:
-                    refund_sms_credits(
-                        usage_record_id=usage_record.id,
-                        reason=f"SMS provider failed: {result.get('error', 'Unknown error')}",
-                    )
-                except Exception:
-                    logger.exception("SMS refund failed for broadcast %s", broadcast_id)
-                return Response(
-                    {
-                        "detail": "SMS sending failed. Your SMS credits were refunded.",
-                        "error": result.get("error"),
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
+                refund_sms_credits(
+                    usage_record_id=usage_record.id,
+                    reason=f"SMS provider failed: {result.get('error', 'Unknown error')}",
+                )
+                raise ValidationError(
+                    "SMS sending failed. Your SMS credits were refunded."
                 )
 
             mark_sms_sent(usage_record.id)
