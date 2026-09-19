@@ -1,5 +1,4 @@
 from django.test import TestCase, TransactionTestCase
-from unittest.mock import patch
 
 from account.models import CustomUser, Organization
 from wallet.models import SmsUsageRecord, Wallet, WalletTransaction
@@ -268,7 +267,7 @@ class WalletTransactionTests(TransactionTestCase):
             cash_balance_ugx=0,
         )
 
-    def test_reservation_uses_wallet_row_lock(self):
+    def test_reservation_transaction_updates_wallet(self):
         wallet = Wallet.objects.get(organization=self.organization)
 
         wallet.balance_credits = 100

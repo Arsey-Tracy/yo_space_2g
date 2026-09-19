@@ -364,8 +364,12 @@ class SendSMSView(APIView):
                     reason=f"SMS provider exception: {str(exc)}",
                 )
 
-                raise ValidationError(
-                    "SMS sending failed. Your SMS credits were refunded."
+                raise Response(
+                    {
+                        "detail": "SMS sending failed. Your SMS credits were refunded.",
+                        "error": str(exc),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             if not result.get("success"):
@@ -373,8 +377,12 @@ class SendSMSView(APIView):
                     usage_record_id=usage_record.id,
                     reason=f"SMS provider failed: {result.get('error', 'Unknown error')}",
                 )
-                raise ValidationError(
-                    "SMS sending failed. Your SMS credits were refunded."
+                raise Response(
+                    {
+                        "detail": "SMS sending failed. Your SMS credits were refunded.",
+                        "error": result.get('error', 'Unknown error'),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             mark_sms_sent(usage_record.id)
