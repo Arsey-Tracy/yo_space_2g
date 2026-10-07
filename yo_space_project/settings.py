@@ -111,6 +111,7 @@ INSTALLED_APPS = [
     "poll", 
     "wallet",
     "spaces",
+    "ussd",
     "sms", "voice",
     "survey",
     "contact",

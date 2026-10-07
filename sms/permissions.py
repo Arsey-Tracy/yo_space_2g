@@ -2,11 +2,9 @@ from rest_framework import permissions
 
 
 class IsOrganizationOwner(permissions.BasePermission):
-    """
-    Allows access only yo authenticatiated users who own the organization associsted with the object
-    """
+    """Allow authenticated organization owners to access their SMS records."""
 
-    message = "You do not hae permission to access this resource."
+    message = "You do not have permission to access this resource."
 
     def has_permission(self, request, view):
         return bool(request.user and request.user.is_authenticated)

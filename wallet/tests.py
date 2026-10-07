@@ -247,6 +247,36 @@ class WalletSMSCreditTests(TestCase):
             self.wallet.balance_credits,
         )
 
+    def test_duplicate_reservation_with_same_idempotency_key_is_ignored(self):
+        self.assertEqual(self.wallet.balance_credits, 100)
+
+        wallet_1, usage_1 = reserve_sms_credits(
+            organization=self.organization,
+            recipient_count=10,
+            broadcast_id="duplicate-broadcast",
+            initiated_by=self.user,
+            idempotency_key="dedupe-123",
+        )
+
+        wallet_2, usage_2 = reserve_sms_credits(
+            organization=self.organization,
+            recipient_count=10,
+            broadcast_id="duplicate-broadcast",
+            initiated_by=self.user,
+            idempotency_key="dedupe-123",
+        )
+
+        self.assertEqual(wallet_1.balance_credits, 90)
+        self.assertEqual(wallet_2.balance_credits, 90)
+        self.assertEqual(usage_1.id, usage_2.id)
+        self.assertEqual(
+            WalletTransaction.objects.filter(
+                wallet=self.wallet,
+                payment_reference="duplicate-broadcast",
+            ).count(),
+            1,
+        )
+
 
 class WalletTransactionTests(TransactionTestCase):
     reset_sequences = True

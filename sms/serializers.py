@@ -1,9 +1,13 @@
 from rest_framework import serializers
-from .models import Broadcast
+
 from spaces.models import Space
+
+from .models import Broadcast
 
 
 class BroadcastSerializer(serializers.ModelSerializer):
+    """API representation and ownership validation for SMS broadcasts."""
+
     space_name = serializers.CharField(source="space.name", read_only=True)
 
     class Meta:
@@ -34,10 +38,10 @@ class BroadcastSerializer(serializers.ModelSerializer):
         request = self.context["request"]
         if not space.organization:
             raise serializers.ValidationError(
-                "This Space is not associated with an organiation."
+                "This Space is not associated with an organization."
             )
         if space.organization.owner_id != request.user.id:
             raise serializers.ValidationError(
-                "You do not have permission to ue this Space."
+                "You do not have permission to use this Space."
             )
         return space

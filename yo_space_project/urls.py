@@ -24,6 +24,9 @@ urlpatterns = [
     # Survey App
     path("api/", include("survey.urls")),
 
+    # USSD App
+    path("api/ussd/", include("ussd.urls")),
+
     # Settings App
     path("api/settings/", include("settings.urls")),
 
@@ -37,4 +40,5 @@ urlpatterns = [
     path("", include("sms.urls")),
     path("", include("voice.urls")),
     path("", include("survey.urls")),
+    path("ussd/", include("ussd.urls")),
 ]

@@ -3,7 +3,6 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     DashboardStatsView, SpaceViewSet, MergeSpacesView,
     SpaceMemberViewSet, ImportMembersCSVView, ExportMembersCSVView,
-    ussd_callback
 )
 from sms.views import BroadcastViewSet, sms_delivery_report
 from survey.views import SurveyViewSet
@@ -26,7 +25,6 @@ urlpatterns = [
     path('', include(router.urls)),
 
     # Africa's Talking Telephony & SMS Webhooks
-    path('ussd/', ussd_callback, name='ussd-callback'),
     path('voice/', voice_callback, name='voice-callback'),
     path('conference/', conference_control, name='conference-control'),
     path('active-listeners/', active_listeners, name='active-listeners'),
