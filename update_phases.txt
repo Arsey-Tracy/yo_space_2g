@@ -1,0 +1,1247 @@
+Absolutely. I’d structure the backend hardening as **5 phases**, with each phase having a clear goal, tasks, and a definition of “done.” The idea is to avoid randomly fixing individual issues and instead move YoSpaces toward a backend we can confidently connect to the frontend.
+
+One current point matters first: Django released security patches **6.0.9 and 5.2.18 on October 6, 2026**, fixing four security issues. So the dependency/version check belongs at the very beginning rather than being postponed. ([Django Project][1])
+
+# YoSpaces Backend Hardening Plan
+
+## Phase 1 — Foundation & Dependency Security
+
+**Goal:** Make sure the project itself is running on a known, supported, reproducible and secure foundation.
+
+### 1.1 Establish the real runtime versions
+
+Check and reconcile:
+
+* `requirements.txt`
+* `requirements-dev.txt` if present
+* `pyproject.toml` if present
+* Render/deployment configuration
+* Actual installed Django version
+* Python version
+* PostgreSQL version
+* DRF version
+* JWT package version
+* Africa's Talking SDK version
+* Payment SDKs/packages
+
+We currently have a possible mismatch between the project's declared Django version and the version the project appears to be using, so this gets resolved first.
+
+### 1.2 Upgrade Django
+
+Choose **one** supported branch and make the entire project consistent.
+
+If staying on Django 6.0:
+
+```text
+Django==6.0.9
+```
+
+If staying on Django 5.2:
+
+```text
+Django==5.2.18
+```
+
+Both received the October 6 security fixes. ([Django Project][1])
+
+I would **not** jump to Django 6.1 just as part of hardening. Security hardening isn't the moment to introduce an unnecessary feature-version migration.
+
+### 1.3 Dependency audit
+
+Run:
+
+```bash
+pip check
+python manage.py check
+python manage.py check --deploy
+python manage.py showmigrations
+```
+
+Then inspect outdated/vulnerable packages.
+
+### 1.4 Environment/secrets audit
+
+Remove things such as:
+
+```python
+API_KEY = env("AT_API_KEY", default="real-secret-here")
+```
+
+Use:
+
+```python
+API_KEY = env("AT_API_KEY")
+```
+
+Audit:
+
+* Africa's Talking credentials
+* MarzPay credentials
+* PesaPal credentials
+* Django `SECRET_KEY`
+* JWT secrets
+* database credentials
+* email credentials
+* webhook secrets
+
+If a real secret has ever been committed to Git, **rotate it**, even if it is now removed.
+
+### 1.5 Production settings
+
+Prepare production-safe configuration:
+
+```text
+DEBUG=False
+ALLOWED_HOSTS=...
+CSRF_TRUSTED_ORIGINS=...
+SECURE_SSL_REDIRECT=True
+SESSION_COOKIE_SECURE=True
+CSRF_COOKIE_SECURE=True
+```
+
+Then review:
+
+* HSTS
+* CORS
+* CSRF
+* allowed origins
+* error pages
+* logging
+* database SSL
+* static/media configuration
+
+### 1.6 Phase 1 tests
+
+Before moving forward:
+
+* project starts
+* migrations work
+* admin works
+* API works
+* USSD endpoint works
+* SMS endpoint works
+* payment endpoints work
+* no dependency conflicts
+* deployment succeeds
+
+### **Phase 1 is DONE when**
+
+> The same dependency versions work locally and in production, no secrets are hardcoded, Django passes deployment checks, and the application boots cleanly.
+
+---
+
+# Phase 2 — Wallet, Credits & Financial Integrity
+
+**Goal:** Make the wallet mathematically trustworthy.
+
+This is probably the **most important phase** because SMS credits represent real money.
+
+The architecture becomes:
+
+```text
+                 ┌─────────────────┐
+                 │     Wallet      │
+                 │ current balance │
+                 └────────┬────────┘
+                          │
+                          ▼
+                ┌───────────────────┐
+                │ WalletTransaction │
+                │ business operation│
+                └─────────┬─────────┘
+                          │
+                          ▼
+                ┌───────────────────┐
+                │ WalletLedgerEntry │
+                │ immutable history │
+                └───────────────────┘
+```
+
+### 2.1 Define the wallet invariant
+
+The central rule:
+
+```text
+balance = previous balance + successful credit operations
+                         - successful debit operations
+```
+
+And:
+
+```text
+balance >= 0
+```
+
+No operation should be able to violate this.
+
+### 2.2 Fix wallet idempotency
+
+Current `_apply_wallet_delta()` needs to be corrected.
+
+The order should be:
+
+```text
+BEGIN TRANSACTION
+
+LOCK WALLET
+
+resolve idempotency key
+
+check whether operation already exists
+
+        ↓
+   already exists?
+      /       \
+    YES       NO
+     |         |
+return       validate
+             balance
+                |
+                ↓
+          update balance
+                |
+                ↓
+       create transaction
+                |
+                ↓
+        create ledger entry
+                |
+                ↓
+              COMMIT
+```
+
+The important part:
+
+**Never modify the balance before determining whether the operation has already happened.**
+
+### 2.3 Wallet operation types
+
+Standardize operations:
+
+```text
+TOPUP
+SMS_DEBIT
+SMS_REFUND
+MANUAL_ADJUSTMENT
+```
+
+Every operation should have:
+
+* idempotency key
+* wallet
+* organization
+* amount/credits
+* balance before
+* balance after
+* timestamp
+* actor where applicable
+* reason/description
+* related transaction
+* related usage record
+
+### 2.4 Top-up protection
+
+For payment callbacks:
+
+```text
+payment received
+       ↓
+verify payment
+       ↓
+check payment reference
+       ↓
+already processed?
+   /          \
+ YES          NO
+  |            |
+return       validate
+             amount
+                ↓
+          credit wallet
+                ↓
+       create ledger entry
+```
+
+A provider retry must **not** give the organization credits twice.
+
+### 2.5 SMS deduction protection
+
+For:
+
+```text
+send SMS to 100 people
+```
+
+we should have:
+
+```text
+100 recipients
+      ↓
+reserve 100 credits
+      ↓
+send SMS
+      ↓
+success → mark sent
+failure → refund 100
+```
+
+Not:
+
+```text
+send SMS
+↓
+hope wallet deduction succeeds
+```
+
+### 2.6 Refund protection
+
+Refund must also be idempotent.
+
+If Africa's Talking fails and the callback/service is retried three times:
+
+```text
+Original debit: -100
+
+Refund attempt 1: +100
+Refund attempt 2: ignored
+Refund attempt 3: ignored
+
+Final effect: +0
+```
+
+### 2.7 Organization.sms_balance
+
+Search the entire codebase for:
+
+```text
+sms_balance
+```
+
+Then decide:
+
+```text
+Wallet.balance_credits
+        ↓
+SOURCE OF TRUTH
+```
+
+`Organization.sms_balance` should eventually disappear if nothing legitimately requires it.
+
+Otherwise we risk:
+
+```text
+Wallet = 100
+Organization.sms_balance = 80
+```
+
+and the system no longer knows which number is correct.
+
+### 2.8 Concurrency tests
+
+Test two requests simultaneously:
+
+```text
+Wallet = 100
+
+Request A → deduct 80
+Request B → deduct 80
+```
+
+Expected:
+
+```text
+A succeeds
+B fails
+
+Wallet = 20
+```
+
+Not:
+
+```text
+Wallet = -60
+```
+
+### 2.9 Financial audit tests
+
+Test:
+
+* duplicate top-up
+* duplicate SMS deduction
+* duplicate refund
+* duplicate payment callback
+* insufficient credits
+* concurrent deductions
+* failed SMS
+* retry after failure
+* wallet deletion/organization deletion
+* ledger consistency
+
+### **Phase 2 is DONE when**
+
+> Every wallet mutation is atomic, idempotent, auditable, concurrency-safe and impossible to accidentally apply twice.
+
+---
+
+# Phase 3 — USSD & SMS Security
+
+**Goal:** Make the Africa's Talking communication layer reliable under real-world requests, retries and malicious input.
+
+This phase covers:
+
+```text
+Africa's Talking
+       ↓
+USSD callback
+       ↓
+USSD session
+       ↓
+authorization
+       ↓
+business operation
+       ↓
+wallet/SMS
+```
+
+## 3.1 Persistent USSD sessions
+
+The move from:
+
+```python
+_ussd_sessions = {}
+```
+
+to:
+
+```text
+UssdSession
+```
+
+is the correct architecture.
+
+Now harden it.
+
+### 3.2 Session locking
+
+Two callbacks for the same phone/session should not corrupt state.
+
+Use database locking around state transitions:
+
+```text
+SELECT ... FOR UPDATE
+```
+
+Conceptually:
+
+```text
+callback
+   ↓
+find session
+   ↓
+lock session
+   ↓
+validate expiry
+   ↓
+read state
+   ↓
+process input
+   ↓
+update state
+   ↓
+commit
+```
+
+### 3.3 Session expiry
+
+Every request should verify:
+
+```text
+expires_at > now
+```
+
+Expired session:
+
+```text
+delete/reset session
+return clean main menu
+```
+
+### 3.4 Input validation
+
+USSD input should be treated as untrusted.
+
+Validate:
+
+* maximum length
+* allowed characters
+* numeric options
+* phone number format
+* PIN format
+* space IDs
+* survey selections
+* menu state
+
+Don't let a user submit something like a 10,000-character USSD payload and pass it through the application.
+
+### 3.5 Space PIN security
+
+Your `Space.pin` is now a **6-digit PIN**, so the USSD flow needs to consistently use six digits.
+
+Validation:
+
+```text
+^\d{6}$
+```
+
+Also:
+
+* limit failed attempts
+* don't expose PIN in logs
+* don't expose PIN unnecessarily in admin
+* don't return PIN in API responses
+* don't use predictable generation
+
+### 3.6 Authorization
+
+This is a major one.
+
+Being a registered `CustomUser` should **not** automatically mean:
+
+```text
+host = True
+```
+
+The system should determine whether:
+
+```text
+phone → authenticated member/host → organization → space
+```
+
+actually authorizes the requested action.
+
+For example:
+
+```text
+Phone A
+   ↓
+owns Space X
+   ↓
+can broadcast to Space X
+```
+
+but:
+
+```text
+Phone A
+   ↓
+does NOT own Space Y
+   ↓
+cannot broadcast to Space Y
+```
+
+### 3.7 Space isolation
+
+Every USSD operation should establish the selected space explicitly.
+
+Never trust:
+
+```text
+space_id
+```
+
+from a client without checking that the current user/session is allowed to access it.
+
+### 3.8 SMS broadcast security
+
+Broadcast pipeline:
+
+```text
+request
+  ↓
+authenticate
+  ↓
+authorize space
+  ↓
+resolve recipients
+  ↓
+validate recipient count
+  ↓
+reserve credits
+  ↓
+send SMS
+  ↓
+mark sent
+       OR
+refund
+```
+
+This should never bypass the wallet.
+
+### 3.9 Phone normalization
+
+Create one canonical phone normalization function rather than having different apps implement their own.
+
+For Uganda:
+
+```text
+0700123456
+      ↓
++256700123456
+```
+
+But malformed numbers should be rejected instead of blindly transformed.
+
+### 3.10 Africa's Talking callback validation
+
+Audit:
+
+* callback authentication
+* expected HTTP method
+* required parameters
+* provider response format
+* duplicate callbacks
+* timeout behavior
+* provider failures
+* logging
+
+### 3.11 Rate limiting
+
+Particularly important for:
+
+* USSD PIN attempts
+* login
+* OTP
+* SMS broadcast
+* payment endpoints
+* public API endpoints
+
+### **Phase 3 is DONE when**
+
+> A user cannot use USSD/SMS to access another organization's data, bypass the wallet, brute-force a PIN, corrupt a session, or cause duplicate broadcasts.
+
+---
+
+# Phase 4 — Payments, Authentication & Multi-Tenant API Security
+
+**Goal:** Ensure organizations cannot see or manipulate another organization's data.
+
+This is the **multi-tenant security phase**.
+
+The basic rule:
+
+```text
+USER
+ ↓
+ORGANIZATION
+ ↓
+RESOURCE
+```
+
+A request should never be able to jump directly from:
+
+```text
+USER → arbitrary RESOURCE
+```
+
+without authorization.
+
+---
+
+## 4.1 Authentication audit
+
+Review:
+
+* registration
+* login
+* logout
+* JWT
+* refresh tokens
+* password reset
+* OTP
+* social login
+* email verification
+* account activation
+
+Check:
+
+```text
+Who are you?
+```
+
+versus:
+
+```text
+What are you allowed to do?
+```
+
+Authentication is not authorization.
+
+---
+
+## 4.2 Organization ownership
+
+Every organization-scoped endpoint should derive the organization from the authenticated user where possible.
+
+Avoid:
+
+```http
+POST /api/spaces/
+
+{
+    "organization_id": 17
+}
+```
+
+if the server can determine the organization from:
+
+```python
+request.user.organization
+```
+
+If an organization ID must be supplied, verify:
+
+```text
+requested organization
+        ==
+user's organization
+```
+
+---
+
+## 4.3 Object-level permissions
+
+Audit every endpoint:
+
+```text
+Spaces
+Members
+Surveys
+Polls
+Contacts
+Notifications
+Wallet
+SMS
+Voice
+USSD
+Payments
+```
+
+For every endpoint ask:
+
+> Can User A retrieve Object B belonging to Organization C?
+
+If yes, fix it.
+
+---
+
+## 4.4 IDOR testing
+
+Explicitly test things like:
+
+```text
+GET /spaces/1/
+GET /spaces/2/
+GET /wallet/
+GET /members/50/
+GET /survey/22/
+```
+
+while authenticated as another organization.
+
+Expected:
+
+```text
+403 Forbidden
+```
+
+or:
+
+```text
+404 Not Found
+```
+
+depending on the endpoint design.
+
+Never:
+
+```text
+200 OK
+```
+
+with another organization's data.
+
+---
+
+# 4.5 Payment webhook hardening
+
+For MarzPay/PesaPal:
+
+```text
+provider callback
+        ↓
+verify authenticity
+        ↓
+validate payment reference
+        ↓
+validate organization
+        ↓
+validate amount
+        ↓
+validate currency
+        ↓
+check transaction state
+        ↓
+check idempotency
+        ↓
+lock payment
+        ↓
+credit wallet
+        ↓
+record ledger
+        ↓
+mark payment complete
+```
+
+Protect against:
+
+* forged callbacks
+* duplicate callbacks
+* modified amounts
+* wrong organization
+* replay attacks
+* payment reference reuse
+* currency mismatch
+* partial state updates
+
+---
+
+## 4.6 Payment state machine
+
+Use explicit states rather than arbitrary updates.
+
+For example:
+
+```text
+INITIATED
+    ↓
+PENDING
+    ↓
+COMPLETED
+```
+
+or:
+
+```text
+PENDING → FAILED
+```
+
+but not:
+
+```text
+COMPLETED → PENDING
+```
+
+unless there is a very specific reason.
+
+---
+
+## 4.7 Admin security
+
+Review:
+
+* staff accounts
+* superusers
+* admin permissions
+* wallet adjustments
+* payment visibility
+* phone numbers
+* USSD sessions
+* ledger records
+
+Sensitive fields should not unnecessarily appear everywhere.
+
+### **Phase 4 is DONE when**
+
+> A user is restricted to their organization, every API endpoint has explicit authorization, and payment callbacks cannot forge or duplicate wallet credits.
+
+---
+
+# Phase 5 — Testing, Observability & Frontend Readiness
+
+**Goal:** Turn all the previous security work into something that stays secure when the code changes.
+
+This phase is basically:
+
+> **Prove the backend works, then freeze the contracts the frontend will consume.**
+
+---
+
+## 5.1 Build a proper test suite
+
+Structure tests around business domains:
+
+```text
+tests/
+├── account/
+├── wallet/
+├── payments/
+├── spaces/
+├── ussd/
+├── sms/
+├── surveys/
+└── api/
+```
+
+Or keep tests inside each Django app.
+
+---
+
+## 5.2 Wallet tests
+
+Minimum:
+
+```text
+test_wallet_topup
+test_duplicate_topup
+test_sms_deduction
+test_duplicate_sms_deduction
+test_insufficient_credits
+test_sms_refund
+test_duplicate_refund
+test_concurrent_deductions
+test_ledger_balance
+```
+
+---
+
+## 5.3 USSD tests
+
+Test the complete state machine:
+
+```text
+MAIN MENU
+   ↓
+JOIN SPACE
+   ↓
+ENTER PIN
+   ↓
+SUCCESS
+```
+
+and:
+
+```text
+wrong PIN
+expired session
+invalid option
+unknown space
+unauthorized host
+too many attempts
+```
+
+---
+
+## 5.4 API security tests
+
+For every organization-scoped endpoint:
+
+```text
+Organization A user
+       ↓
+Organization A resource
+       → ALLOW
+
+Organization A user
+       ↓
+Organization B resource
+       → DENY
+```
+
+This becomes one of the most important regression suites.
+
+---
+
+## 5.5 Payment tests
+
+Simulate:
+
+```text
+first callback
+second identical callback
+modified callback
+wrong amount
+wrong currency
+unknown reference
+failed payment
+provider timeout
+```
+
+---
+
+## 5.6 Integration tests
+
+Test real workflows rather than isolated functions.
+
+### Registration
+
+```text
+Register
+ ↓
+Login
+ ↓
+Create organization
+ ↓
+Create space
+ ↓
+Add members
+```
+
+### SMS
+
+```text
+Top up
+ ↓
+Wallet credited
+ ↓
+Create broadcast
+ ↓
+Reserve credits
+ ↓
+Send SMS
+ ↓
+Mark sent
+```
+
+### Failed SMS
+
+```text
+Top up
+ ↓
+Reserve credits
+ ↓
+Provider fails
+ ↓
+Refund
+ ↓
+Wallet restored
+```
+
+### USSD
+
+```text
+Dial USSD
+ ↓
+Main menu
+ ↓
+Join space
+ ↓
+PIN
+ ↓
+Membership
+ ↓
+Browse/use feature
+```
+
+---
+
+# 5.7 API contract freeze
+
+Once the backend passes the tests, document the frontend-facing contracts.
+
+For each endpoint:
+
+```text
+METHOD
+URL
+AUTH
+REQUEST
+RESPONSE
+ERRORS
+PERMISSIONS
+```
+
+Example:
+
+```text
+POST /api/auth/login/
+
+Request:
+{
+    "email": "...",
+    "password": "..."
+}
+
+Response:
+{
+    "access": "...",
+    "refresh": "...",
+    "user": {...}
+}
+```
+
+Then the Next.js frontend can be built against stable contracts instead of constantly chasing backend changes.
+
+---
+
+# 5.8 Error standardization
+
+Instead of every endpoint returning a different structure:
+
+```json
+{"error": "..."}
+```
+
+```json
+{"detail": "..."}
+```
+
+```json
+{"message": "..."}
+```
+
+standardize API errors.
+
+For example:
+
+```json
+{
+    "error": {
+        "code": "INSUFFICIENT_CREDITS",
+        "message": "You do not have enough SMS credits."
+    }
+}
+```
+
+This makes frontend handling much easier.
+
+---
+
+# 5.9 Logging & observability
+
+Add structured logs around important events:
+
+```text
+LOGIN
+ORG_CREATED
+SPACE_CREATED
+SMS_BROADCAST
+SMS_FAILED
+WALLET_TOPUP
+WALLET_DEBIT
+WALLET_REFUND
+PAYMENT_COMPLETED
+PAYMENT_FAILED
+USSD_SESSION
+AUTHORIZATION_FAILURE
+```
+
+But **never log**:
+
+```text
+passwords
+JWTs
+API keys
+payment secrets
+USSD PINs
+full sensitive payloads
+```
+
+---
+
+# 5.10 Production verification
+
+Before frontend integration:
+
+```bash
+python manage.py check --deploy
+python manage.py test
+pip check
+python manage.py showmigrations
+```
+
+Then deploy to staging/production and verify:
+
+```text
+Database
+Auth
+Organizations
+Spaces
+Wallet
+Payments
+SMS
+USSD
+Surveys
+API permissions
+```
+
+---
+
+# Final Architecture After the 5 Phases
+
+The backend should eventually look conceptually like this:
+
+```text
+                         ┌──────────────┐
+                         │   Next.js    │
+                         │   Frontend   │
+                         └──────┬───────┘
+                                │
+                           HTTPS / JWT
+                                │
+                                ▼
+                    ┌─────────────────────┐
+                    │     Django API      │
+                    │ Auth + Permissions  │
+                    └──────────┬──────────┘
+                               │
+             ┌─────────────────┼──────────────────┐
+             │                 │                  │
+             ▼                 ▼                  ▼
+        Organization       Spaces/Members      Surveys
+             │
+             ▼
+          Wallet
+             │
+     ┌───────┼────────┐
+     │       │        │
+     ▼       ▼        ▼
+ Payments   SMS      Ledger
+     │       │
+     │       ▼
+     │  Africa's Talking
+     │
+     ▼
+ MarzPay / PesaPal
+
+
+             Africa's Talking
+                    │
+             ┌──────┴──────┐
+             ▼             ▼
+           USSD            SMS
+             │
+             ▼
+       UssdSession
+             │
+             ▼
+      Authorization
+             │
+             ▼
+        Business logic
+```
+
+## The actual order I recommend
+
+| Phase                    | Main objective                                     | Priority    |
+| ------------------------ | -------------------------------------------------- | ----------- |
+| **1. Foundation**        | Dependencies, Django, secrets, production settings | 🔴 Critical |
+| **2. Wallet**            | Money/credits integrity + idempotency              | 🔴 Critical |
+| **3. USSD/SMS**          | Communication security + concurrency               | 🔴 Critical |
+| **4. API/Payments**      | Multi-tenant authorization + payment security      | 🔴 Critical |
+| **5. Testing/Readiness** | Regression tests + API contracts + deployment      | 🟠 High     |
+
+And importantly, **we shouldn't start frontend work seriously until Phase 4 is substantially complete**. Otherwise we'll end up building the Next.js application around APIs whose authentication, organization scoping, wallet behavior, and response formats are still changing.
+
+The immediate starting point is therefore **Phase 1 → establish the actual Django/runtime version, patch it, then move directly into the wallet idempotency fix in Phase 2**. ([Django Project][1])
+
+[1]: https://www.djangoproject.com/weblog/2026/oct/06/security-releases/?utm_source=chatgpt.com "Django security releases issued: 6.1.2, 6.0.9, and 5.2.18 | Weblog | Django"

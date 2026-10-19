@@ -11,13 +11,13 @@ from django.http import HttpResponse
 from django.utils import timezone
 
 from rest_framework import status, permissions, viewsets, serializers
-from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser
 
 from account.models import Organization, Member
+from account.permissions import IsAuthenticatedAndHasOrganization
 
 from sms.models import Broadcast
 from sms.serializers import BroadcastSerializer
@@ -47,7 +47,7 @@ def _normalize_phone(phone: str) -> str:
 
 
 class DashboardStatsView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticatedAndHasOrganization]
 
     def get_space(self):
         return get_object_or_404(
@@ -69,18 +69,8 @@ class DashboardStatsView(APIView):
         serializer.save(space=space)
 
     def get(self, request):
-        org = Organization.objects.filter(owner=request.user).first()
-        if not org:
-            member = Member.objects.filter(user=request.user).first()
-            if member:
-                org = member.organization
+        org = request.active_organization
 
-        if not org:
-            return Response(
-                {"detail": "Organization not found."}, status=status.HTTP_404_NOT_FOUND
-            )
-
-        plan = None  # No subscription plan
         spaces = Space.objects.filter(organization=org)
         total_spaces = spaces.count()
         total_members = (
@@ -122,13 +112,26 @@ class SpaceViewSet(viewsets.ModelViewSet):
     serializer_class = SpaceSerializer
     permission_classes = [permissions.IsAuthenticated, IsOrganizationOwner]
 
+    def get_organization(self):
+        organizations = Organization.objects.filter(owner=self.request.user)
+        organization_id = self.request.headers.get("X-Organization-ID")
+        if organization_id:
+            try:
+                return organizations.filter(pk=int(organization_id)).first()
+            except (TypeError, ValueError):
+                return None
+        return organizations.order_by("id").first()
+
     def get_queryset(self):
-        return Space.objects.filter(
-            organization__owner=self.request.user
-        ).select_related("organization")
+        organization = self.get_organization()
+        if organization is None:
+            return Space.objects.none()
+        return Space.objects.filter(organization=organization).select_related(
+            "organization"
+        )
 
     def perform_create(self, serializer):
-        org = Organization.objects.filter(owner=self.request.user).first()
+        org = self.get_organization()
         if not org:
             raise serializers.ValidationError(
                 "Only organization owners can create spaces."
@@ -318,4 +321,3 @@ class ExportMembersCSVView(APIView):
             )
 
         return response
-

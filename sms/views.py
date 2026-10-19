@@ -16,6 +16,7 @@ from .permissions import IsOrganizationOwner
 from .serializers import BroadcastSerializer
 from .services import SmsDeliveryError, deliver_broadcast
 from .providers import format_sms_message, send_bulk_sms
+from .utils import normalize_phone_numbers
 
 logger = logging.getLogger("yospaces")
 
@@ -28,24 +29,25 @@ class BroadcastViewSet(viewsets.ModelViewSet):
     serializer_class = BroadcastSerializer
 
     def create(self, request, *args, **kwargs):
-        space_id = request.data.get("space")
-        if space_id is not None:
-            try:
-                from spaces.models import Space as SpaceModel
+        try:
+            from spaces.models import Space as SpaceModel
 
-                space = SpaceModel.objects.get(id=space_id)
-            except SpaceModel.DoesNotExist:
-                return Response(
-                    {"detail": "Space not found."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            if not space.organization or space.organization.owner_id != request.user.id:
-                return Response(
-                    {
-                        "detail": "You do not have permission to create broadcast for this organization."
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            space = SpaceModel.objects.select_related("organization").get(
+                pk=request.data.get("space")
+            )
+        except (SpaceModel.DoesNotExist, ValueError, TypeError):
+            return Response(
+                {"detail": "Space not found."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not space.organization or space.organization.owner_id != request.user.id:
+            return Response(
+                {
+                    "detail": "You do not have permission to create a broadcast for this organization."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         return super().create(request, *args, **kwargs)
 
     def get_queryset(self):
@@ -71,7 +73,9 @@ class BroadcastViewSet(viewsets.ModelViewSet):
             org_name=organization.name,
         )
 
-        recipients = list(space.members.values_list("phone_number", flat=True))
+        recipients = normalize_phone_numbers(
+            list(space.members.values_list("phone_number", flat=True))
+        )
         recipients_count = len(recipients)
 
         if broadcast_status == "sent":
@@ -100,11 +104,12 @@ class BroadcastViewSet(viewsets.ModelViewSet):
                 status="sent",
             )
         else:
+            is_scheduled = broadcast_status == "scheduled"
             serializer.save(
                 created_by=self.request.user,
                 message=message,
-                recipients_count=recipients_count,
-                cost_credits=recipients_count,
+                recipients_count=0 if is_scheduled else recipients_count,
+                cost_credits=0 if is_scheduled else recipients_count,
                 status=broadcast_status,
             )
 

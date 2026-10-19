@@ -11,6 +11,7 @@ class Broadcast(models.Model):
     STATUS_CHOICES = [
         ("draft", "Draft"),
         ("scheduled", "Scheduled"),
+        ("sending", "Sending"),
         ("sent", "Sent"),
         ("failed", "Failed"),
     ]
@@ -31,6 +32,7 @@ class Broadcast(models.Model):
     scheduled_at = models.DateTimeField(null=True, blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=15, choices=STATUS_CHOICES, default="draft")
+    failure_reason = models.TextField(blank=True)
     recipients_count = models.PositiveIntegerField(default=0)
     cost_credits = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)

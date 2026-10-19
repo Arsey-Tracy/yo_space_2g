@@ -3,7 +3,9 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework_simplejwt.views import TokenViewBase
 from .serializers import CustomTokenObtainPairSerializer
-from .views import RegisterView, ProfileView, OrganizationView, MemberViewSet, LoginView
+from .views import (
+    RegisterView, ProfileView, OrganizationView, MemberViewSet, LoginView, MeView,
+)
 
 
 class CustomTokenObtainPairView(TokenViewBase):
@@ -22,6 +24,8 @@ urlpatterns = [
     path('token/refresh', TokenRefreshView.as_view()),
     path('profile/', ProfileView.as_view(), name='user-profile'),
     path('profile', ProfileView.as_view()),
+    path('me/', MeView.as_view(), name='user-me'),
+    path('me', MeView.as_view()),
     path('organization/', OrganizationView.as_view(), name='organization-detail'),
     path('organization', OrganizationView.as_view()),
     path('organization/', include(router.urls)),

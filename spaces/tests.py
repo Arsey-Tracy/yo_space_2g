@@ -1,4 +1,5 @@
 import io
+from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
@@ -13,6 +14,7 @@ from wallet.models import Wallet
 
 class YoSpacesBackendTestCase(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = APIClient()
         # Seed Subscriptions & SMS Bundle
         # Subscription and SMS bundle seeding removed
@@ -22,7 +24,7 @@ class YoSpacesBackendTestCase(TestCase):
         self.user_data = {
             'username': 'testadmin',
             'email': 'admin@test.com',
-            'password': 'password123',
+            'password': 'StrongPass123!',
             'phone': '+256700000001',
             'organization_name': 'Test NGO'
         }
@@ -44,7 +46,8 @@ class YoSpacesBackendTestCase(TestCase):
     def test_new_organization_starts_with_zero_balance(self):
         self.org.refresh_from_db()
         self.assertEqual(self.org.sms_balance, 0)
-        self.assertFalse(Wallet.objects.filter(organization=self.org).exists())
+        wallet = Wallet.objects.get(organization=self.org)
+        self.assertEqual(wallet.balance_credits, 0)
 
     def test_space_creation_and_limits(self):
         url = reverse('space-list')
@@ -55,6 +58,35 @@ class YoSpacesBackendTestCase(TestCase):
         # Unlimited spaces allowed; second space should be created successfully
         res2 = self.client.post(url, {'name': 'Farmers Group 2'})
         self.assertEqual(res2.status_code, status.HTTP_201_CREATED)
+
+    def test_space_crud_is_scoped_to_the_selected_owned_organization(self):
+        second_org = Organization.objects.create(
+            owner=self.user,
+            name="Second NGO",
+        )
+        create_response = self.client.post(
+            reverse('space-list'),
+            {'name': 'Second organization space'},
+            HTTP_X_ORGANIZATION_ID=str(second_org.id),
+        )
+
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        space_id = create_response.data['id']
+
+        update_response = self.client.patch(
+            reverse('space-detail', kwargs={'pk': space_id}),
+            {'description': 'Updated description'},
+            HTTP_X_ORGANIZATION_ID=str(second_org.id),
+        )
+        self.assertEqual(update_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(update_response.data['description'], 'Updated description')
+
+        delete_response = self.client.delete(
+            reverse('space-detail', kwargs={'pk': space_id}),
+            HTTP_X_ORGANIZATION_ID=str(second_org.id),
+        )
+        self.assertEqual(delete_response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Space.objects.filter(pk=space_id).exists())
 
     def test_member_addition_and_csv_import(self):
         space = Space.objects.create(organization=self.org, name='Youth Group', host_phone='+256700000001')

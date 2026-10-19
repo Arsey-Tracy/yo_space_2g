@@ -7,7 +7,7 @@ from typing import Optional
 
 from django.conf import settings
 
-from .utils import _normalize_phone
+from .utils import normalize_phone_numbers
 
 logger = logging.getLogger("yospaces")
 
@@ -47,13 +47,7 @@ def send_bulk_sms(
 ) -> dict:
     """Send one message to normalized recipients using Africa's Talking."""
     message = format_sms_message(message, sender_id=sender_id, org_name=org_name)
-    recipients = sorted(
-        {
-            normalized
-            for phone in phone_numbers
-            if (normalized := _normalize_phone(phone))
-        }
-    )
+    recipients = normalize_phone_numbers(phone_numbers)
     if not recipients:
         return {
             "success": False,

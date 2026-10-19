@@ -6,14 +6,8 @@ class CustomUser(AbstractUser):
     phone = models.CharField(max_length=20, blank=True, null=True)
     preferred_language = models.CharField(
         max_length=20,
-        choices=[
-            ('en', 'English'),
-            ('lg', 'Luganda'),
-            ('sw', 'Swahili'),
-            ('rn', 'Runyakitara'),
-            ('ach', 'Acholi')
-        ],
-        default='en'
+        choices=[("en", "English")],
+        default="en",
     )
 
     def __str__(self):
@@ -21,10 +15,19 @@ class CustomUser(AbstractUser):
 
 
 class Organization(models.Model):
+    users = models.ManyToManyField(
+        CustomUser,
+        through="Member",
+        related_name="organizations",
+    )
     owner = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='owned_organizations', null=True, blank=True)
     name = models.CharField(max_length=255)
     sender_id = models.CharField(max_length=11, blank=True, null=True, help_text="Custom SMS Sender ID")
-    default_language = models.CharField(max_length=20, default='en')
+    default_language = models.CharField(
+        max_length=20,
+        choices=[("en", "English")],
+        default="en",
+    )
     sms_balance = models.PositiveIntegerField(default=0, help_text="Remaining SMS credit balance")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
