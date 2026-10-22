@@ -1,8 +1,10 @@
 """SMS provider integrations and outbound message formatting."""
 
 import logging
+import json
 import urllib.parse
 import urllib.request
+from urllib.error import HTTPError
 from typing import Optional
 
 from django.conf import settings
@@ -96,6 +98,24 @@ def _send_with_rest_api(
         with urllib.request.urlopen(request, timeout=SMS_PROVIDER_TIMEOUT) as response:
             body = response.read().decode("utf-8")
         return {"success": True, "response": body, "count": len(recipients)}
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        provider_message = None
+        try:
+            payload = json.loads(body)
+            if isinstance(payload, dict):
+                sms_data = payload.get("SMSMessageData")
+                if isinstance(sms_data, dict):
+                    provider_message = sms_data.get("Message")
+                provider_message = provider_message or payload.get("message") or payload.get("error")
+        except json.JSONDecodeError:
+            pass
+
+        error = f"SMS provider rejected the request (HTTP {exc.code})"
+        if isinstance(provider_message, str) and provider_message.strip():
+            error = f"{error}: {provider_message.strip()[:200]}"
+        logger.warning("Africa's Talking rejected SMS request with HTTP %s", exc.code)
+        return {"success": False, "error": error, "count": len(recipients)}
     except Exception as exc:
         logger.exception("Africa's Talking REST SMS request failed")
         return {"success": False, "error": str(exc), "count": len(recipients)}

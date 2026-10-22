@@ -58,7 +58,10 @@ def deliver_broadcast(
         )
         if not isinstance(result, dict) or not result.get("success"):
             error = result.get("error", "Unknown error") if isinstance(result, dict) else "Invalid provider response"
-            raise SmsDeliveryError(DELIVERY_FAILURE_MESSAGE) from RuntimeError(error)
+            provider_detail = " ".join(str(error).split())[:200]
+            raise SmsDeliveryError(
+                f"{DELIVERY_FAILURE_MESSAGE} Provider response: {provider_detail}"
+            ) from RuntimeError(provider_detail)
     except Exception as exc:
         provider_error = exc.__cause__ or exc
         refund_sms_credits(

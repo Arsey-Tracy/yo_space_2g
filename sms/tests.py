@@ -1,5 +1,6 @@
 from datetime import timedelta
-from io import StringIO
+from io import BytesIO, StringIO
+from urllib.error import HTTPError
 from unittest.mock import patch
 
 from django.core.management import call_command
@@ -104,6 +105,23 @@ class SmsProviderTests(SimpleTestCase):
         self.assertEqual(result["count"], 0)
         send_rest.assert_not_called()
 
+    @patch("sms.providers.africastalking", None)
+    @patch("sms.providers.AFRICASTALKING_API_KEY", "")
+    def test_send_bulk_sms_reports_provider_http_error_details(self):
+        provider_error = HTTPError(
+            "https://api.africastalking.com/version1/messaging",
+            400,
+            "Bad Request",
+            {},
+            BytesIO(b'{"SMSMessageData":{"Message":"Invalid sender ID"}}'),
+        )
+        with patch("sms.providers.urllib.request.urlopen", side_effect=provider_error):
+            result = send_bulk_sms(["0700000001"], "Hello")
+
+        self.assertFalse(result["success"])
+        self.assertIn("HTTP 400", result["error"])
+        self.assertIn("Invalid sender ID", result["error"])
+
 
 class SmsBroadcastServiceTests(TestCase):
     def setUp(self):
@@ -162,7 +180,7 @@ class SmsBroadcastServiceTests(TestCase):
         self.assertEqual(SMSUsageLog.objects.get().recipient_count, 2)
 
     def test_deliver_broadcast_refunds_credits_when_provider_rejects(self):
-        with self.assertRaises(SmsDeliveryError):
+        with self.assertRaises(SmsDeliveryError) as raised:
             deliver_broadcast(
                 organization=self.organization,
                 space=self.space,
@@ -171,10 +189,11 @@ class SmsBroadcastServiceTests(TestCase):
                 initiated_by=self.owner,
                 sms_sender=lambda *args, **kwargs: {
                     "success": False,
-                    "error": "Provider unavailable",
+                    "error": "Invalid sender ID",
                 },
             )
 
+        self.assertIn("Invalid sender ID", str(raised.exception))
         self.wallet.refresh_from_db()
         usage = SmsUsageRecord.objects.get()
         self.assertEqual(self.wallet.balance_credits, 5)
