@@ -268,6 +268,7 @@ class WalletTransactionViewSet(viewsets.ReadOnlyModelViewSet):
         wallet = getattr(org, "wallet", None) if org else None
         return (
             WalletTransaction.objects.filter(wallet=wallet)
+            .order_by("-created_at")
             if wallet
             else WalletTransaction.objects.none()
         )
