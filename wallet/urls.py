@@ -18,9 +18,9 @@ from .views import (
 )
 
 router = DefaultRouter()
-router.register(r'wallet', WalletViewSet, basename='wallet')
 router.register(r'wallet/transactions', WalletTransactionViewSet, basename='wallettransaction')
 router.register(r'wallet/usage', SmsUsageRecordViewSet, basename='smsusagerecord')
+router.register(r'wallet', WalletViewSet, basename='wallet')
 router.register(r'telecom-networks', TelecomNetworkViewSet, basename='telecomnetwork')
 
 urlpatterns = [
